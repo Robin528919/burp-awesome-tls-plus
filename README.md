@@ -140,8 +140,9 @@ Enabling is per Burp session. The endpoint never comes back on its own after a r
    ```
 
    Skills are a Claude Code feature — Codex reads plain instructions, so the same file is appended to
-   its `AGENTS.md` rather than maintained as a second document. It is optional, changes nothing in
-   Burp, and the source is [`skills/awesome-tls-mcp/SKILL.md`](https://github.com/Robin528919/burp-awesome-tls-plus/blob/main/skills/awesome-tls-mcp/SKILL.md).
+   its `AGENTS.md` rather than maintained as a second document. Running that second line twice leaves
+   two copies; delete the old section before re-running it to update. Installing is optional and
+   changes nothing in Burp. The source is [`skills/awesome-tls-mcp/SKILL.md`](https://github.com/Robin528919/burp-awesome-tls-plus/blob/main/skills/awesome-tls-mcp/SKILL.md).
 4. When a proposal arrives, the tab is marked with a dot. It never steals focus or opens a dialog on
    its own.
 5. Review the diff and press **Apply** or **Reject**. **Revert last AI apply** undoes the most recent

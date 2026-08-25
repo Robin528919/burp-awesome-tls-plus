@@ -126,7 +126,8 @@
    ```
 
    skill 是 Claude Code 的机制，Codex 读的是纯指令文件，所以同一份内容直接追加进它的 `AGENTS.md`，
-   而不是再维护第二份文档。它是可选的，不会改变 Burp 里的任何行为，原文见
+   而不是再维护第二份文档。第二条命令跑两次会追加两份，要更新请先删掉旧的那一节。装不装都可以，
+   它不会改变 Burp 里的任何行为，原文见
    [`skills/awesome-tls-mcp/SKILL.md`](https://github.com/Robin528919/burp-awesome-tls-plus/blob/main/skills/awesome-tls-mcp/SKILL.md)。
 4. 有提议到达时，标签页上会出现一个圆点。它不会抢焦点，也不会自动弹窗。
 5. 看完 diff 后点 **Apply** 或 **Reject**。**Revert last AI apply** 可以撤销最近一次已应用的改动，

@@ -332,7 +332,8 @@ final class AiControlPanel {
                         + "the usage guide alongside it \u2014 which of a fingerprint and a hex "
                         + "ClientHello wins, the acknowledgements a proposal has to carry, and how "
                         + "to capture a ClientHello \u2014 so the client does not have to guess. "
-                        + "Optional, and it changes nothing in Burp."));
+                        + "Optional, and it changes nothing in Burp. The Codex line appends to "
+                        + "AGENTS.md, so running it twice leaves two copies."));
         return panel;
     }
 
