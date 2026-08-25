@@ -53,10 +53,54 @@
 | 覆盖的工具 | 仅 Proxy | 全部工具 —— Proxy、Repeater、Intruder、Scanner 以及其他扩展 |
 | 规则存储 | — | 存为 Burp 工程之外的 JSON 文件：可手工编辑、可 diff、可共享 |
 | 保存方式 | 手动，且分标签页 | 规则自动保存；支持导入导出，方便在多台机器间迁移 |
+| AI 访问 | — | 可选的本地 MCP 端点，AI 客户端可以读取设置并提交修改提议，但永远无法自己应用 |
 
 同时修复了上游的两个问题：两个 `Save all settings` 按钮各自只保存所属标签页，导致改了两个标签页却只从一处保存时，另一处的修改被静默丢弃；以及处理失败的请求会被直接丢弃而不是原样放行。
 
 设置界面重写为手写 Swing，并通过 Burp 自身的 `applyThemeToComponent` 应用主题。被替换掉的 IntelliJ GUI designer form 从未接入 Gradle 构建，只能在 IDE 内重新生成。
+
+---
+
+## AI Control（可选，默认关闭）
+
+**AI Control** 标签页会在本机开一个 [MCP](https://modelcontextprotocol.io) 端点，让 AI 客户端
+（Codex Desktop、Codex CLI）读取 Awesome TLS 的设置并提交修改提议。对外只有两个工具：
+
+| 工具 | 作用 |
+| --- | --- |
+| `awesome_tls.settings.inspect` | 返回已提交的设置、生效的域名规则、指纹列表、各监听器的真实状态，以及（可选）某个主机实际会用到的完整传输配置。只读，不做 DNS 解析，也不向目标发任何流量。 |
+| `awesome_tls.settings.propose` | 校验一次修改并记录下来等待审批，本身不改任何设置。 |
+
+**应用、拒绝、撤销只能由你在 Burp 里完成。** 没有任何工具可以应用提议，端点也没有通往应用的路径。
+提议会展示逐字段的完整 diff、每项改动影响什么以及何时生效；对可能让整套环境失联的改动
+——监听地址、上游代理、全局指纹、删除规则——还会要求二次确认。
+
+### 启用前请先读这段
+
+端点只绑定 `127.0.0.1`，并且**完全没有任何认证**。这是有意接受的权衡，不是疏漏，它意味着：
+
+- 本机上以你的身份运行的任何进程，都能通过它读到**完整设置，包括外部代理凭据和完整的 hex ClientHello**；
+- 这类进程都可以提交一份等你审批的提议；
+- 绑定回环地址并不等于认证——正因如此，每次启用都会显示这段警告，并且需要你勾选确认已经读过。
+
+启用只对当前 Burp 会话有效，重启后不会自动恢复。
+
+### 使用方式
+
+1. 打开 **Awesome TLS → AI Control**，选择端口（默认 `8885`），勾选确认后点 **Enable**。
+2. 把 MCP 客户端指向 `http://127.0.0.1:8885/mcp`。
+3. 有提议到达时，标签页上会出现一个圆点。它不会抢焦点，也不会自动弹窗。
+4. 看完 diff 后点 **Apply** 或 **Reject**。**Revert last AI apply** 可以撤销最近一次已应用的改动，
+   直到有任何新的提交为止。
+
+### 完整审计
+
+默认关闭。开启后，每一次调用、提议、审批和设置变更都会带着完整取值记录到 `rules.json` 同目录下的
+`audit/`。由此有两点后果：审计文件是**明文、未加密**的，任何能访问该目录的程序都能读；以及开启期间，
+写不进审计的操作就不会发生——审计写入失败的设置变更会被拒绝，而不是不留记录地应用。
+
+设计本身以及每项决策的理由见
+[ADR-0001](docs/decisions/0001-ai-settings-control-via-embedded-mcp.md)。
 
 ---
 
@@ -210,6 +254,9 @@ flowchart LR
 
 完成后你会得到一个可在当前操作系统上配合 Burp 使用的 jar 文件（通常位于 `./build/libs`）。
 
+跑检查用 `./gradlew checkAll`：它会执行全部自检、验证 inspect 与 propose 不做任何域名解析，
+并用一个替身 Burp API 加载整个扩展。
+
 ## 常见问题 (FAQ)
 
 ### 什么是 Burp Suite TLS 指纹伪造扩展？
@@ -247,6 +294,12 @@ flowchart LR
 ### 启用后如何验证指纹？
 
 可用 [tls.peet.ws](https://tls.peet.ws/)、[tlsfingerprint.io](https://tlsfingerprint.io/)、[scrapfly HTTP/2 工具](https://scrapfly.io/web-scraping-tools/http2-fingerprint)，以及 [Cloudflare connection 演示](https://cloudflare.manfredi.io/en/tools/connection) 等公开检测站对比。
+
+### AI 能修改我的 Burp 设置吗？
+
+只有在你自己于 Burp 中逐条批准时才能。可选的 AI Control 端点允许 AI 客户端读取设置并提交提议；
+应用、拒绝、撤销都是 Burp 界面上的操作，背后没有对应的工具。该端点默认关闭、只绑定回环地址、
+且没有认证——具体含义见 [AI Control](#ai-control可选默认关闭)。
 
 ### 域名规则存在哪里？
 

@@ -2,13 +2,15 @@
 
 ## Project Structure & Architecture
 
-`src/main/java/burp/` contains the Java 17 Burp extension, Swing settings UI, rule matching, and JNA bridge. `src-go/server/` contains the native TLS proxy; `cmd/main.go` exports the shared-library entry points. Compiled native libraries belong under `src/main/resources/<jna-platform>/` and are intentionally ignored. Documentation and screenshots live in `docs/`; root Markdown files and `docs/**/*.md` are also published through GitHub Pages.
+`src/main/java/burp/` contains the Java 17 Burp extension, Swing settings UI, rule matching, and JNA bridge. `src/main/java/burp/control/` contains `SettingsControl` and the AI Settings Control stack, deliberately free of Burp and Swing types. `src/test/java/probe/` holds the two probes that need a stand-in Burp API or a Java 18+ resolver SPI. `src-go/server/` contains the native TLS proxy; `cmd/main.go` exports the shared-library entry points. Compiled native libraries belong under `src/main/resources/<jna-platform>/` and are intentionally ignored. Documentation and screenshots live in `docs/`; root Markdown files and `docs/**/*.md` are also published through GitHub Pages.
 
 Requests are rewritten in Java, carry per-request JSON in the `Awesometlsconfig` header, and are forwarded by the local Go server. Keep `TransportConfig.java` and the Go `TransportConfig` struct field-for-field compatible. Keep Java and Go configuration-directory constants synchronized.
 
-## AI Settings Control Direction (Locked)
+## AI Settings Control (Locked, implemented)
 
 The normative design and acceptance contract is [ADR-0001: AI Settings Control via Embedded MCP](docs/decisions/0001-ai-settings-control-via-embedded-mcp.md). Read it before changing settings storage, validation, the Swing settings UI, rule matching, MCP transport, or extension lifecycle. Its accepted decisions are locked; changing them requires explicit user approval and an ADR update.
+
+It is implemented. The embedded HTTP engine is Jetty 12 core, chosen by the section 16.5 spike: Burp's bundled runtime is a JRE 24 **without `jdk.httpserver`**, so `com.sun.net.httpserver` is unavailable, and Jetty core needs no servlet container. Outstanding before release: the section 17.3 end-to-end run with Codex Desktop and Codex CLI inside a real Burp, which cannot be automated here.
 
 The non-negotiable core is:
 
@@ -24,8 +26,9 @@ The non-negotiable core is:
 
 - `cd src-go/server && go build -buildmode=c-shared -o ../../src/main/resources/darwin-aarch64/libserver.dylib ./cmd/main.go` builds the native library for Apple Silicon. Use the platform mapping in `README.md` elsewhere.
 - `./gradlew buildJar` creates `build/libs/burp-awesome-tls-plus.jar`; build the Go library first.
-- `cd src-go/server && go test ./...` compiles and runs any Go tests.
+- `cd src-go/server && go test -race ./...` runs the Go tests, including the runtime-status race gate and the proxy-URL golden vectors that must agree with `burp.control.ProxyUrl`.
 - `./gradlew compileJava` performs the Java compile check.
+- `./gradlew checkAll` runs every self-check, the no-DNS probe, and the extension smoke test.
 - `./build.sh` packages all platform-specific and fat jars, but only after CI/xgo-style outputs exist in `src-go/server/build/`.
 
 ## Coding Style & Naming
@@ -34,7 +37,9 @@ Use four-space indentation and existing package-private boundaries in Java. Clas
 
 ## Testing Guidelines
 
-There is no conventional test suite or coverage threshold yet. Add focused `_test.go` or `src/test/java` tests when practical. Existing Java regression checks are executable `main` methods in `RuleMatcher` and `RuleStore`; run them with assertions as documented in `CLAUDE.md`. For request-path changes, load the jar in Burp and verify the observed TLS/HTTP2 fingerprint against an authorized test endpoint.
+There is no conventional test suite or coverage threshold. Java checks are executable `main` methods, registered in `build.gradle` and run together with `./gradlew checkAll`; add a new one to the `selfChecks` list so it cannot quietly stop running. Keep a check in the class it exercises, following the existing pattern. For request-path changes, load the jar in Burp and verify the observed TLS/HTTP2 fingerprint against an authorized test endpoint.
+
+Three invariants are easy to break and hard to notice, so they have dedicated checks: `SettingsControlCheck` for the commit-decision boundary, `AiSettingsServiceCheck` for what an AI may and may not do, and `McpServerCheck` for the wire contract. Do not weaken an assertion in these to make a change pass.
 
 ## Commits & Pull Requests
 

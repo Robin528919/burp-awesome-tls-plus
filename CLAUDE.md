@@ -48,21 +48,37 @@ The Go library also runs standalone for debugging: `go run ./cmd/main.go -spoof 
 
 ## Tests
 
-There is no test framework — no `_test.go` files, no `src/test`, and CI only verifies that
-both halves compile.
-
-Two runnable self-checks cover the logic that breaks silently. Both are plain `main` methods
-with no Burp dependency:
+There is still no test framework. Checks are executable `main` methods, listed in `build.gradle`
+and run together:
 
 ```sh
-./gradlew compileJava
-GSON=$(find ~/.gradle/caches -name 'gson-*.jar' | head -1)
-java -ea -cp build/classes/java/main:$GSON burp.RuleMatcher   # matching + rule override semantics
-java -ea -cp build/classes/java/main:$GSON burp.RuleStore     # on-disk format, atomic write, corruption handling
+./gradlew checkAll
 ```
+
+That runs three groups:
+
+- **`selfCheck`** — sixteen `main`-method self-checks. Each lives in the class it exercises and is
+  documented there. The load-bearing ones are `burp.control.SettingsControlCheck` (crash and
+  fault injection across the two-store commit), `burp.control.AiSettingsServiceCheck` (what an AI
+  may and may not do), and `burp.control.McpServerCheck` (the full HTTP/JSON-RPC contract, against
+  a real listener).
+- **`noNetworkCheck`** — installs a counting `InetAddressResolverProvider` and asserts that
+  inspect and propose resolve zero names. That SPI needs Java 18+, so the task skips with an
+  explanation when no such JDK is registered; the extension itself stays on 17.
+- **`extensionSmoke`** — initializes `Extension` against a stand-in Montoya API under a temporary
+  `user.home`. It is the only check that exercises the Burp wiring, whose failure mode is
+  otherwise just "the extension does not load".
+
+Go has `go test -race ./...`, which covers the runtime-status snapshot and the shared proxy state.
+The proxy-URL contract is asserted on both sides — `src-go/server/proxyurl_test.go` and
+`burp.control.ProxyUrl#main` carry the same table, so a `tls-client` bump that widens or narrows
+the accepted set breaks the build rather than changing what the UI accepts.
 
 Everything else is verified manually: load the jar into Burp and check the resulting
 fingerprint against `tls.peet.ws` or `scrapfly.io/web-scraping-tools/http2-fingerprint`.
+
+Not covered by any of the above, and required by ADR-0001 section 17.3 before release: the same
+MCP flow driven by Codex Desktop and Codex CLI inside a running Burp.
 
 ## Architecture
 
@@ -140,9 +156,11 @@ migrates them once and deliberately leaves the old key in place so a downgrade s
 ### The two halves
 
 - `src/main/java/burp/` — Burp extension. `Extension` registers the proxy handler, the
-  suite tab, and starts the Go server on a background thread. `Settings` wraps Burp's
-  `Preferences` KV store (only String/Boolean/Integer are available). `ServerLibrary` is
-  the JNA interface. `SettingsTab` is the UI.
+  suite tab, and starts the Go server on a background thread. `Settings` is the composition root
+  and the face the Swing UI talks to. `ServerLibrary` is the JNA interface. `SettingsTab` is the
+  UI, with `AiControlPanel` as its fourth tab.
+- `src/main/java/burp/control/` — `SettingsControl` and everything behind it. Deliberately free of
+  Burp and Swing types, which is what lets the failure paths be exercised without either.
 - `src-go/server/` — `server.go` (the local HTTPS server + handler), `transport.go`
   (`TransportConfig` + tls-client construction), `hexclienthello.go` (parses a raw
   ClientHello hex stream into a utls spec), `certificate.go` (self-signed CA, cached under
@@ -150,6 +168,55 @@ migrates them once and deliberately leaves the old key in place so a downgrade s
   fingerprint-sniffing proxy), `cmd/main.go` (cgo exports).
 
 Go module is named `server` (not a domain path); `cmd/main.go` imports it as `"server"`.
+
+### AI Settings Control
+
+[ADR-0001](docs/decisions/0001-ai-settings-control-via-embedded-mcp.md) is the normative contract
+for this; read it before changing settings storage, validation, the settings UI, rule matching, MCP
+transport, or extension lifecycle. The shape:
+
+```text
+Codex Desktop / CLI  ──MCP──>  McpServer (Jetty, 127.0.0.1 only)
+                                    │
+                               AiSettingsService        SettingsTab / AiControlPanel
+                                    └───────> SettingsControl <───────┘
+                                                   │
+                         Preferences ──── rules.json ──── TransactionJournal / AuditTrail
+                                                   │
+                                    committed snapshot + matching RuleMatcher
+                                                   │
+                                            request hot path
+```
+
+`SettingsControl` is the single seam. Both adapters — Swing and MCP — go through it, so validation,
+revisioning, diffing and persistence cannot fork into near-copies that disagree. The committed
+snapshot and its `RuleMatcher` are published together in one `AtomicReference`, so a request thread
+sees a whole configuration or the previous whole configuration, never a mixture.
+
+Things that will look like bugs and are not:
+
+- **There is no tool that applies a proposal.** `inspect` and `propose` are the only two, and
+  `propose` writes nothing. Approval, rejection and revert live in the Burp UI. Adding an
+  AI-callable apply is a new architecture decision, not a feature.
+- **Exactly one phase is the commit decision.** `TransactionJournal.Phase.COMMIT_DECIDED`. Before
+  it, any failure rolls back; at or after it, nothing rolls back, ever — a change the user approved
+  and that was durably decided must not be undone because a phase marker or a UI refresh failed
+  afterwards. With full audit on, the durable `MUTATION_COMMITTED` event *is* the decision.
+- **"Was it committed?" has three answers.** `AuditTrail.Evidence` is `FOUND`, `ABSENT` or
+  `INDETERMINATE`. Collapsing the third into `ABSENT` turns a torn write into a silent rollback.
+- **Duplicated rule patterns disable every row claiming that key**, rather than the last one
+  winning. This replaced the previous behaviour on purpose; see `RuleMatcher#checkDuplicatesNeverMatch`.
+- **`RuleStore.parse` is strict.** A blank file, a null row or an unknown field is now an error,
+  not "you have no rules" — because the same file is the base for a three-way merge, and an empty
+  baseline silently discards every rule. `RuleStore.probe()` is the only read that may be used for
+  inspect, propose, approval or recovery: it has no side effects, where `load()` quarantines.
+- **`HostKey` is the only host normalizer.** The request path, the UI, AI patches, the revision and
+  the matcher all call it and only switch `Mode`.
+- **AI Control's own port, enable state and audit switch are not settings.** They do not enter the
+  revision, so enabling the listener cannot invalidate a proposal waiting for review. The enable
+  state is deliberately not persisted.
+- **The request path uses the Go listener's actual address**, via `Settings#activeSpoofProxyAddress`,
+  not the configured one. Changing the address does not move a running server.
 
 ## Non-obvious constraints
 

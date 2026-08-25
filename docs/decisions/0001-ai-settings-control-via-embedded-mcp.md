@@ -1,7 +1,7 @@
 # ADR-0001：通过内嵌 MCP 实现 AI Settings Control
 
 - 状态：Accepted / Locked
-- 实现状态：Planned；Accepted 表示决策已接受，不表示当前 checkout 已实现该功能
+- 实现状态：Implemented（2026-08-25）。除第 17.3 节要求的 Codex Desktop / Codex CLI 真实 Burp E2E 外，本文锁定的行为均已实现并有可复核的自动检查；详见 §21 实现记录
 - 日期：2026-08-25
 - 范围：Burp 扩展内的设置查看、AI 修改提议、Burp 本地审批及其运行保障
 - 规范性：本文是该功能的开发与验收合同；改变已接受决策必须取得用户明确批准并同步更新本文与仓库根目录 `AGENTS.md`
@@ -1184,3 +1184,31 @@ server/discover
 - [MCP 2026-07-28 Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http)
 - [MCP Java SDK changelog](https://github.com/modelcontextprotocol/java-sdk/blob/main/CHANGELOG.md)
 - [MCP Java SDK 3.x milestone](https://github.com/modelcontextprotocol/java-sdk/milestone/28)
+
+## 21. 实现记录（2026-08-25）
+
+本节记录实现结果与验证状态，不改变上文任何已接受决策。
+
+### 21.1 HTTP engine Spike 结论（§16.5）
+
+Burp 自带运行时为 **JRE 24.0.1，且 `java --list-modules` 中没有 `jdk.httpserver`**，`com.sun.net.httpserver` 不可用，这与 §16.5 的担忧一致。选定 **Jetty 12 core（`org.eclipse.jetty:jetty-server:12.0.16`）**：5 个 jar 约 2.1 MB，不需要 Servlet container，不依赖 XNIO，不使用 `jdk.httpserver`，且不需要手写 HTTP parser。已在 Burp 自带 JRE 上验证重复启停、端口释放、无残留线程、端口冲突以 `IOException` 失败且不改端口。
+
+### 21.2 已实现并有自动检查覆盖
+
+- `SettingsControl` 单一 seam、原子发布 snapshot + matcher、staged commit、唯一 commit decision、补偿与启动恢复（`burp.control.SettingsControlCheck`，含故障注入与全部 phase 的恢复矩阵）；
+- canonical 化与 revision，含 §8.1 golden vector（`burp.control.Jcs`、`burp.control.SettingsSnapshot`）；
+- 共享 `HostKey` normalization、共享 validator、无效/重复 raw row 不进入 matcher 的行为修正（`burp.control.HostKey`、`Validation`、`burp.RuleMatcher`）；
+- RuleStore v1 wrapper / legacy bare array / strict 失败、无副作用 `probe()`、`saveIfUnchanged`（`burp.RuleStore`）；
+- proposal 生命周期、幂等、TTL、单 pending、三方合并与 re-review、AI revert 限制（`burp.control.AiSettingsServiceCheck`、`ThreeWayMerge`、`Proposal`）；
+- MCP `2026-07-28` adapter：§15 错误映射逐行、header 合同、gate、限流与并发上限、固定 discovery/tools 合同与 schema golden 比较（`burp.control.McpServerCheck`，对真实 listener 发起）；
+- inspect / propose 不做 DNS：通过 `java.net.spi.InetAddressResolverProvider` 计数器实测为 0（`./gradlew noNetworkCheck`）；
+- Go 侧独立 `RuntimeStatePort`：新增 `runtimestatus.go` 与 `GetRuntimeStatus` cgo 导出，`TransportConfig` 未改动；并发状态通过 `go test -race`；
+- external proxy URL v1 合同的 Java/Go 双向 golden vectors（`burp.control.ProxyUrl` 与 `src-go/server/proxyurl_test.go`）；
+- fat jar 在 Burp 自带 JRE 24 上独立加载并跑通全部自检；扩展在替身 Montoya API 下可初始化、建 UI、启停 MCP 并 unload（`./gradlew extensionSmoke`）。
+
+### 21.3 尚未完成的 gate
+
+- **§17.3 的 Codex Desktop / Codex CLI 真实 Burp E2E 未执行**，需要这两个客户端与运行中的 Burp，无法在此环境自动化。在完成并留档之前，不得按 §19 宣称功能完成，也不得把任何客户端写成 verified support。
+- §17.2 的 Swing 集成项为人工检查项，尚未在真实 Burp 界面中逐项走查。
+- v1 未签发 cursor，因此 `ChunkReference` / `InspectChunk` 路径已在 schema 与错误码中就位，但未产生真实分块输出；带 cursor 的 inspect 一律返回 `CURSOR_INVALID`。
+- `Mcp-Name` 的 `=?base64?...?=` sentinel 解码按本文字面实现，并兼容 RFC 2047 的 `=?utf-8?B?...?=` 拼写；E2E 时须对照官方规范确认。
