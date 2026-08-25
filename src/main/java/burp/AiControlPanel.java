@@ -26,8 +26,11 @@ import javax.swing.SwingUtilities;
 import javax.swing.border.EmptyBorder;
 import javax.swing.table.AbstractTableModel;
 import java.awt.BorderLayout;
+import java.awt.Component;
 import java.awt.Desktop;
 import java.awt.FlowLayout;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
 import java.awt.datatransfer.StringSelection;
 import java.awt.Toolkit;
 import java.io.IOException;
@@ -65,9 +68,21 @@ final class AiControlPanel {
     private final JButton buttonToggle = new JButton("Enable");
     private final JLabel labelStatus = new JLabel();
     private final JLabel labelEndpoint = new JLabel();
+    private final JLabel labelAuditState = new JLabel();
     private final JCheckBox checkBoxUnderstood =
             new JCheckBox("I understand and accept that any process on this machine can read these values");
     private final JCheckBox checkBoxFullAudit = new JCheckBox("Record everything to the audit trail");
+
+    /**
+     * Everything that only matters while deciding whether to switch this on. It is hidden once the
+     * listener is running, because it is 200 pixels of text competing with the diff a user is
+     * trying to review — and the panel's two jobs never happen at the same time. Nothing is lost:
+     * the listener can only be enabled while this is visible, which is exactly what section 4.2
+     * requires of the warning.
+     */
+    private final JPanel panelSetup = new JPanel();
+
+    private final JPanel panelSelectedValue = new JPanel(new BorderLayout(0, 4));
 
     private final JTextArea textConnect = SettingsTab.descriptionText(" ");
     private final JLabel labelCopied = new JLabel(" ");
@@ -98,8 +113,25 @@ final class AiControlPanel {
         checkBoxFullAudit.setSelected(settings.aiControl().fullAudit());
 
         root.setBorder(new EmptyBorder(8, 8, 8, 8));
-        root.add(buildHeader(), BorderLayout.NORTH);
-        root.add(buildBody(), BorderLayout.CENTER);
+        var content = new Stack();
+        content.row(buildHeader());
+        content.row(buildProposalSection(), 1);
+        content.row(buildAuditSection());
+        var scroll = new JScrollPane(content,
+                JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED, JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.setBorder(null);
+        scroll.getVerticalScrollBar().setUnitIncrement(16);
+        root.add(scroll, BorderLayout.CENTER);
+
+        // Outside the scroll area on purpose. These are the only actions on the panel that change
+        // anything, and one of them was landing below the fold on a short window — a decision the
+        // user cannot take without first discovering they need to scroll for it.
+        var actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        actions.setBorder(new EmptyBorder(4, 0, 0, 0));
+        actions.add(buttonApply);
+        actions.add(buttonReject);
+        actions.add(buttonRevert);
+        root.add(actions, BorderLayout.SOUTH);
 
         buttonToggle.addActionListener(e -> toggle());
         checkBoxUnderstood.addActionListener(e -> syncControls());
@@ -127,30 +159,30 @@ final class AiControlPanel {
     // ------------------------------------------------------------------ layout
 
     private JComponent buildHeader() {
-        var panel = new JPanel();
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setAlignmentX(JComponent.LEFT_ALIGNMENT);
+        var panel = new Stack();
 
         var controls = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
-        controls.setAlignmentX(JComponent.LEFT_ALIGNMENT);
         controls.add(new JLabel("Port"));
         controls.add(spinnerPort);
         controls.add(buttonToggle);
         controls.add(labelStatus);
-        panel.add(controls);
+        controls.add(Box.createHorizontalStrut(16));
+        controls.add(checkBoxFullAudit);
+        var openFolder = new JButton("Open audit folder");
+        openFolder.addActionListener(e -> openAuditFolder());
+        controls.add(openFolder);
+        panel.row(controls);
 
         labelEndpoint.setBorder(new EmptyBorder(0, 8, 4, 0));
-        panel.add(leftAligned(labelEndpoint));
+        panel.row(labelEndpoint);
 
         // The disclosure, in full, every time. Section 4.2 requires it to be unavoidable rather
         // than something that scrolls past once during setup.
-        var warning = new JPanel();
-        warning.setLayout(new BoxLayout(warning, BoxLayout.Y_AXIS));
-        warning.setAlignmentX(JComponent.LEFT_ALIGNMENT);
+        var warning = new Stack();
         warning.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createTitledBorder("Before you enable this"),
                 new EmptyBorder(4, 8, 8, 8)));
-        warning.add(leftAligned(SettingsTab.warningText(
+        warning.row(SettingsTab.warningText(
                 "The endpoint listens on 127.0.0.1 only, and has no authentication of any kind.\n\n"
                         + "• Any process running as you on this machine can read your complete "
                         + "settings through it, including external proxy credentials and the full "
@@ -159,26 +191,95 @@ final class AiControlPanel {
                         + "• Nothing it submits is applied until you approve it here. Applying, "
                         + "rejecting and reverting are only ever done in this tab.\n"
                         + "• Binding to loopback is not authentication, and this warning is shown "
-                        + "every time for that reason.")));
-        warning.add(Box.createVerticalStrut(6));
-        warning.add(leftAligned(checkBoxUnderstood));
-        panel.add(warning);
+                        + "every time for that reason."));
+        warning.row(Box.createVerticalStrut(6));
+        // Section 4.2 also requires the enable-time warning to state whether full audit is on. It
+        // used to appear only in the endpoint line, which reads "not listening" at exactly the
+        // moment this is being decided.
+        warning.row(labelAuditState);
+        warning.row(Box.createVerticalStrut(6));
+        warning.row(checkBoxUnderstood);
 
-        var auditPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
-        auditPanel.setAlignmentX(JComponent.LEFT_ALIGNMENT);
-        auditPanel.add(checkBoxFullAudit);
-        var openFolder = new JButton("Open audit folder");
-        openFolder.addActionListener(e -> openAuditFolder());
-        auditPanel.add(openFolder);
-        panel.add(auditPanel);
-        panel.add(leftAligned(SettingsTab.descriptionText(
+        panelSetup.setLayout(new BorderLayout(0, 4));
+        var setupRows = new Stack();
+        setupRows.row(warning);
+        setupRows.row(SettingsTab.descriptionText(
                 "The audit trail is plain text and is not encrypted. It records complete request "
                         + "and result values, credentials included, and can be read by anything with "
                         + "access to the folder — other local users, backup software, and sync "
-                        + "clients. There is no delete button here; manage the files yourself.")));
+                        + "clients. There is no delete button here; manage the files yourself."));
+        panelSetup.add(setupRows, BorderLayout.CENTER);
+        panel.row(panelSetup);
 
-        panel.add(leftAligned(buildConnectSection()));
+        panel.row(buildConnectSection());
         return panel;
+    }
+
+    /**
+     * A one-column layout whose rows each get the container's full width.
+     * <p>
+     * BoxLayout cannot be used for this. It sizes a child to that child's preferred width, and a
+     * wrapping JTextArea has no meaningful preferred width — it needs to be told how wide it is
+     * before it can work out how tall it is. The result is description text clipped at the right
+     * edge, which is exactly what happened to the audit and client-setup paragraphs here.
+     */
+    private static final class Stack extends JPanel implements javax.swing.Scrollable {
+        private int row;
+
+        Stack() {
+            super(new GridBagLayout());
+        }
+
+        Stack row(Component component) {
+            return row(component, 0);
+        }
+
+        /**
+         * @param weighty how much of any leftover height this row should absorb.
+         */
+        Stack row(Component component, double weighty) {
+            var constraints = new GridBagConstraints();
+            constraints.gridx = 0;
+            constraints.gridy = row++;
+            constraints.weightx = 1;
+            constraints.weighty = weighty;
+            constraints.fill = weighty > 0 ? GridBagConstraints.BOTH : GridBagConstraints.HORIZONTAL;
+            constraints.anchor = GridBagConstraints.NORTHWEST;
+            super.add(component, constraints);
+            return this;
+        }
+
+        @Override
+        public java.awt.Dimension getPreferredScrollableViewportSize() {
+            return getPreferredSize();
+        }
+
+        @Override
+        public int getScrollableUnitIncrement(java.awt.Rectangle visible, int orientation, int direction) {
+            return 16;
+        }
+
+        @Override
+        public int getScrollableBlockIncrement(java.awt.Rectangle visible, int orientation, int direction) {
+            return visible.height;
+        }
+
+        /** Never scrolls sideways; the point of this layout is that rows take the full width. */
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            return true;
+        }
+
+        /**
+         * Fills a tall window, scrolls a short one. Without this the panel either cannot grow or
+         * cannot shrink, and in a short window a BorderLayout section smaller than its own minimum
+         * draws its parts on top of each other.
+         */
+        @Override
+        public boolean getScrollableTracksViewportHeight() {
+            return getParent() instanceof javax.swing.JViewport viewport
+                    && viewport.getHeight() > getPreferredSize().height;
+        }
     }
 
     /**
@@ -189,8 +290,7 @@ final class AiControlPanel {
      * whose failure mode is a client that silently never connects.
      */
     private JComponent buildConnectSection() {
-        var panel = new JPanel();
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        var panel = new Stack();
         panel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createTitledBorder("Connect a client"),
                 new EmptyBorder(4, 8, 8, 8)));
@@ -201,14 +301,14 @@ final class AiControlPanel {
         buttons.add(copyButton("Codex", Snippet.CODEX));
         buttons.add(copyButton("JSON config", Snippet.JSON));
         buttons.add(labelCopied);
-        panel.add(leftAligned(buttons));
+        panel.row(buttons);
 
-        panel.add(leftAligned(textConnect));
-        panel.add(leftAligned(SettingsTab.descriptionText(
+        panel.row(textConnect);
+        panel.row(SettingsTab.descriptionText(
                 "The Claude Code and Codex commands register the server globally, for every "
                         + "project. Drop \"--scope user\" to keep it to the current project instead. "
                         + "A globally registered client can reach this endpoint from any session, "
-                        + "whenever it is enabled here.")));
+                        + "whenever it is enabled here."));
         return panel;
     }
 
@@ -268,52 +368,64 @@ final class AiControlPanel {
         };
     }
 
-    /**
-     * BoxLayout positions each child by its own alignmentX, and the defaults differ by component —
-     * a check box centres itself while a text area does not — so anything stacked vertically has to
-     * say which edge it wants or the column comes out ragged.
-     */
-    private static <T extends JComponent> T leftAligned(T component) {
-        component.setAlignmentX(JComponent.LEFT_ALIGNMENT);
-        return component;
-    }
 
-    private JComponent buildBody() {
+    private JComponent buildProposalSection() {
         var proposal = new JPanel(new BorderLayout(0, 6));
         proposal.setBorder(BorderFactory.createTitledBorder("Proposal"));
         proposal.add(textProposalSummary, BorderLayout.NORTH);
 
-        var centre = new JPanel(new BorderLayout(0, 6));
-        var scroll = new JScrollPane(tableDiff);
-        scroll.setPreferredSize(new java.awt.Dimension(600, 180));
-        centre.add(scroll, BorderLayout.CENTER);
+        // The diff is the reason this panel exists, so it takes whatever height is left over.
+        tableDiff.setPreferredScrollableViewportSize(new java.awt.Dimension(600, 200));
+        tableDiff.setFillsViewportHeight(true);
+        // Only the trailing value column absorbs a window resize; the rest keep their widths.
+        tableDiff.setAutoResizeMode(JTable.AUTO_RESIZE_LAST_COLUMN);
+        // Scope and field have to stay readable — truncating them loses the only part of a row
+        // that says what changed — while "add"/"replace"/"remove" never needs more than its own
+        // width. Both the current and the preferred width are set: in this resize mode the columns
+        // that are not last keep whatever width they already have, which is the 75px default.
+        columnWidth(0, 210, 120);
+        columnWidth(1, 130, 90);
+        columnWidth(2, 75, 60);
+        columnWidth(3, 200, 60);
+        columnWidth(4, 200, 60);
 
-        var detail = new JPanel(new BorderLayout(0, 4));
-        detail.setBorder(BorderFactory.createTitledBorder("Selected value"));
-        detail.add(textValueDetail, BorderLayout.CENTER);
+        var centre = new JPanel(new BorderLayout(0, 6));
+        centre.add(new JScrollPane(tableDiff), BorderLayout.CENTER);
+
+        panelSelectedValue.setBorder(BorderFactory.createTitledBorder("Selected value"));
+        var valueScroll = new JScrollPane(textValueDetail);
+        valueScroll.setPreferredSize(new java.awt.Dimension(600, 90));
+        panelSelectedValue.add(valueScroll, BorderLayout.CENTER);
         var detailButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         detailButtons.add(buttonCopyValue);
-        detail.add(detailButtons, BorderLayout.SOUTH);
-        centre.add(detail, BorderLayout.SOUTH);
+        panelSelectedValue.add(detailButtons, BorderLayout.SOUTH);
+        // Only takes space once there is something in it; an empty titled box in the middle of the
+        // panel is a hundred pixels that never say anything.
+        panelSelectedValue.setVisible(false);
+        centre.add(panelSelectedValue, BorderLayout.SOUTH);
         proposal.add(centre, BorderLayout.CENTER);
 
-        var footer = new JPanel(new BorderLayout(0, 4));
-        footer.add(textRisk, BorderLayout.CENTER);
-        var buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
-        buttons.add(buttonApply);
-        buttons.add(buttonReject);
-        buttons.add(buttonRevert);
-        footer.add(buttons, BorderLayout.SOUTH);
-        proposal.add(footer, BorderLayout.SOUTH);
+        proposal.add(textRisk, BorderLayout.SOUTH);
+        return proposal;
+    }
 
+    private void columnWidth(int index, int width, int minimum) {
+        var column = tableDiff.getColumnModel().getColumn(index);
+        column.setMinWidth(minimum);
+        column.setPreferredWidth(width);
+        column.setWidth(width);
+    }
+
+    private JComponent buildAuditSection() {
         var auditPanel = new JPanel(new BorderLayout(0, 4));
         auditPanel.setBorder(BorderFactory.createTitledBorder("Recent audit events"));
-        auditPanel.add(new JScrollPane(listAudit), BorderLayout.CENTER);
-        auditPanel.add(new JScrollPane(textAuditDetail), BorderLayout.SOUTH);
-
-        var split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, proposal, auditPanel);
-        split.setResizeWeight(0.65);
-        return split;
+        var listScroll = new JScrollPane(listAudit);
+        listScroll.setPreferredSize(new java.awt.Dimension(600, 90));
+        auditPanel.add(listScroll, BorderLayout.CENTER);
+        var auditDetailScroll = new JScrollPane(textAuditDetail);
+        auditDetailScroll.setPreferredSize(new java.awt.Dimension(600, 70));
+        auditPanel.add(auditDetailScroll, BorderLayout.SOUTH);
+        return auditPanel;
     }
 
     // ------------------------------------------------------------------ lifecycle
@@ -495,6 +607,15 @@ final class AiControlPanel {
                 ? "Endpoint: " + settings.mcpServer().endpoint()
                         + "   —   full audit is " + (settings.aiControl().fullAudit() ? "ON" : "OFF")
                 : "Not listening. Enabling is per Burp session; it is never restored automatically.");
+        labelAuditState.setText("Full audit is currently "
+                + (settings.aiControl().fullAudit() ? "ON" : "OFF")
+                + ". Everything above would " + (settings.aiControl().fullAudit() ? "" : "not ")
+                + "be written to the audit trail in full.");
+
+        // Setting up and reviewing never happen at the same moment, so they do not have to share
+        // the window. While the listener is down the panel is a decision; while it is up it is a
+        // review surface, and the diff needs the room.
+        panelSetup.setVisible(!running);
     }
 
     private void showProposal() {
@@ -512,6 +633,7 @@ final class AiControlPanel {
             textRisk.setText(" ");
             textValueDetail.setText(" ");
             buttonCopyValue.setEnabled(false);
+            panelSelectedValue.setVisible(false);
             return;
         }
 
@@ -540,8 +662,17 @@ final class AiControlPanel {
         textRisk.setText(riskText(proposal));
         textValueDetail.setText(" ");
         buttonCopyValue.setEnabled(false);
+        panelSelectedValue.setVisible(false);
     }
 
+    /**
+     * Risks first, then what actually happens and when.
+     * <p>
+     * The runtime impact is grouped rather than listed per field. A proposal that adds two rules
+     * produces a dozen entries all saying the same thing, and the one entry that matters — the
+     * change that will not take effect until something is reloaded — ends up indistinguishable from
+     * the rest of the wall. So the ordinary case is counted, and anything else is spelled out.
+     */
     private static String riskText(Proposal proposal) {
         var text = new StringBuilder();
         if (proposal.risks().isEmpty()) {
@@ -551,15 +682,27 @@ final class AiControlPanel {
                 text.append('[').append(risk.severity()).append("] ").append(risk.message()).append('\n');
             }
         }
-        if (!proposal.impact().isEmpty()) {
+
+        var immediate = proposal.impact().stream()
+                .filter(impact -> "NEXT_REQUEST".equals(impact.effect()))
+                .count();
+        var deferred = proposal.impact().stream()
+                .filter(impact -> !"NEXT_REQUEST".equals(impact.effect()))
+                .toList();
+
+        if (immediate > 0 || !deferred.isEmpty()) {
             text.append('\n');
-            for (var impact : proposal.impact()) {
-                text.append(impact.path()).append(" — ").append(impact.effect());
-                if (impact.requiresUserAction()) {
-                    text.append(" (needs a reload)");
-                }
-                text.append(": ").append(impact.message()).append('\n');
+        }
+        if (immediate > 0) {
+            text.append(immediate).append(immediate == 1 ? " change takes" : " changes take")
+                    .append(" effect on the next request.\n");
+        }
+        for (var impact : deferred) {
+            text.append(impact.path()).append(" — ").append(impact.effect());
+            if (impact.requiresUserAction()) {
+                text.append(" (needs a reload)");
             }
+            text.append(": ").append(impact.message()).append('\n');
         }
         return text.toString();
     }
@@ -569,6 +712,7 @@ final class AiControlPanel {
         // A control that does nothing when pressed is worse than one that is visibly unavailable,
         // and every other button on this panel already disables itself.
         buttonCopyValue.setEnabled(row >= 0);
+        panelSelectedValue.setVisible(row >= 0);
         if (row < 0) {
             textValueDetail.setText(" ");
             return;
@@ -629,8 +773,18 @@ final class AiControlPanel {
      * The field-level diff. One row per changed leaf field, never a whole rule, so nothing can hide
      * inside a collapsed object.
      */
+    /**
+     * The field-level diff. One row per changed leaf field, never a whole rule, so nothing can hide
+     * inside a collapsed object.
+     * <p>
+     * Scope and field are separate columns rather than one output path. A path renders as
+     * {@code /domainRules/byHost/*.cdn.example.org/fingerprint}, and the first thing a column of
+     * that width truncates is the tail — which is the only part that says which field changed.
+     */
     private static final class DiffTableModel extends AbstractTableModel {
-        private static final String[] COLUMNS = {"Setting", "Change", "Before", "After"};
+        private static final String[] COLUMNS = {"Scope", "Field", "Change", "Before", "After"};
+        private static final String RULE_PREFIX = "/domainRules/byHost/";
+        private static final String SETTINGS_PREFIX = "/settings/";
 
         private List<Wire.FieldChange> changes = List.of();
 
@@ -662,11 +816,34 @@ final class AiControlPanel {
         public Object getValueAt(int row, int column) {
             var change = changes.get(row);
             return switch (column) {
-                case 0 -> change.path();
-                case 1 -> change.operation();
-                case 2 -> summarize(change.before());
+                case 0 -> scopeOf(change.path());
+                case 1 -> fieldOf(change.path());
+                case 2 -> change.operation();
+                case 3 -> summarize(change.before());
                 default -> summarize(change.after());
             };
+        }
+
+        private static String scopeOf(String path) {
+            if (path.startsWith(SETTINGS_PREFIX)) {
+                return "Global";
+            }
+            if (!path.startsWith(RULE_PREFIX)) {
+                return path;
+            }
+            var rest = path.substring(RULE_PREFIX.length());
+            var slash = rest.lastIndexOf('/');
+            return unescape(slash < 0 ? rest : rest.substring(0, slash));
+        }
+
+        private static String fieldOf(String path) {
+            var slash = path.lastIndexOf('/');
+            return slash < 0 ? path : unescape(path.substring(slash + 1));
+        }
+
+        /** RFC 6901 tokens are escaped in the wire path; the table shows what the user typed. */
+        private static String unescape(String token) {
+            return token.replace("~1", "/").replace("~0", "~");
         }
 
         /**

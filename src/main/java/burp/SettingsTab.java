@@ -619,7 +619,24 @@ public class SettingsTab {
     }
 
     static JTextArea descriptionText(String text) {
-        var area = new JTextArea(text);
+        // A wrapping JTextArea reports the preferred height it would need at its *preferred* width,
+        // which for wrapped text is meaningless — the height depends on the width it is actually
+        // given. Left alone it asks for one line and gets clipped. Asking the text View for the
+        // span it needs at the current width is the answer the layout manager needs.
+        var area = new JTextArea(text) {
+            @Override
+            public java.awt.Dimension getPreferredSize() {
+                var width = getWidth();
+                if (width <= 0 || !getLineWrap()) {
+                    return super.getPreferredSize();
+                }
+                var view = getUI().getRootView(this);
+                view.setSize(width, Integer.MAX_VALUE);
+                var insets = getInsets();
+                var height = (int) view.getPreferredSpan(javax.swing.text.View.Y_AXIS);
+                return new java.awt.Dimension(width, height + insets.top + insets.bottom);
+            }
+        };
         area.setEditable(false);
         area.setOpaque(false);
         area.setFocusable(false);
