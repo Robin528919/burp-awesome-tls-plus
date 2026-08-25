@@ -146,6 +146,16 @@ copy, so use §4 whenever the fingerprint needs to be stored, shared, or scoped 
 
 ## 7. Raw HTTP (debugging only)
 
-A registered MCP client handles this for you. When curling by hand, all four are enforced:
-`Content-Type: application/json`, `Accept: application/json, text/event-stream`,
-`MCP-Protocol-Version: 2026-07-28`, and **no `Origin` header at all**. Host must be `127.0.0.1:<port>`.
+A registered MCP client handles this for you. Curling by hand, every one of these is enforced
+separately, and each has its own refusal — a missing one is never ignored:
+
+| Header | Value | If wrong |
+| --- | --- | --- |
+| `Content-Type` | `application/json` | 415 |
+| `Accept` | must contain **both** `application/json` and `text/event-stream` | 406 |
+| `MCP-Protocol-Version` | `2026-07-28`, exactly | 400 |
+| `Mcp-Method` | the JSON-RPC `method`, verbatim (`tools/list`, `tools/call`) | 400, `-32020` |
+| `Mcp-Name` | on `tools/call`, the tool name — must equal `params.name` | 400, `-32020` |
+| `Origin` | must be **absent**; the value is never even compared | 403 |
+
+`Host` must be `127.0.0.1:<port>`.
