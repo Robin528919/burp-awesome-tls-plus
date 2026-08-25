@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "revision": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "address": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "hostPattern": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "fingerprintName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "clearableString": {
+      "type": ["string", "null"]
+    },
+    "clearableHex": {
+      "oneOf": [
+        {"type": "string", "pattern": "^(?:[0-9A-Fa-f]{2})*$"},
+        {"type": "null"}
+      ]
+    },
+    "settingsPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "spoofProxyAddress": {"$ref": "#/$defs/address"},
+        "interceptProxyAddress": {"$ref": "#/$defs/address"},
+        "burpProxyAddress": {"$ref": "#/$defs/address"},
+        "fingerprint": {"$ref": "#/$defs/fingerprintName"},
+        "hexClientHello": {"$ref": "#/$defs/clearableHex"},
+        "useInterceptedFingerprint": {"type": "boolean"},
+        "httpTimeout": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "externalProxyUrl": {"$ref": "#/$defs/clearableString"}
+      }
+    },
+    "ruleUpsert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostPattern"],
+      "minProperties": 2,
+      "properties": {
+        "hostPattern": {"$ref": "#/$defs/hostPattern"},
+        "enabled": {"type": "boolean"},
+        "fingerprint": {
+          "oneOf": [
+            {"type": "string", "maxLength": 256},
+            {"type": "null"}
+          ]
+        },
+        "hexClientHello": {"$ref": "#/$defs/clearableHex"},
+        "externalProxyUrl": {"$ref": "#/$defs/clearableString"},
+        "httpTimeout": {
+          "oneOf": [
+            {"type": "integer", "minimum": 1, "maximum": 3600},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "domainRuleChanges": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "upsert": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {"$ref": "#/$defs/ruleUpsert"}
+        },
+        "remove": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {"$ref": "#/$defs/hostPattern"}
+        }
+      }
+    },
+    "patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "settings": {"$ref": "#/$defs/settingsPatch"},
+        "domainRules": {"$ref": "#/$defs/domainRuleChanges"}
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "expectedRevision", "requestId", "patch"],
+  "properties": {
+    "schemaVersion": {"const": "awesome_tls.settings.v1"},
+    "expectedRevision": {"$ref": "#/$defs/revision"},
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "summary": {"type": "string", "maxLength": 500},
+    "acknowledgements": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "GLOBAL_HEX_OVERRIDES_FINGERPRINT",
+          "RULE_HEX_OVERRIDES_FINGERPRINT",
+          "RULE_FINGERPRINT_SUPPRESSES_INHERITED_HEX"
+        ]
+      }
+    },
+    "patch": {"$ref": "#/$defs/patch"}
+  }
+}
