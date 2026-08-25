@@ -113,8 +113,23 @@
 
    这两条命令都是**全局注册**，对所有项目生效。去掉 `--scope user` 则只对当前项目生效。
    全局注册意味着：只要你在 Burp 里启用了这个端点，任何会话的客户端都能连上它。
-3. 有提议到达时，标签页上会出现一个圆点。它不会抢焦点，也不会自动弹窗。
-4. 看完 diff 后点 **Apply** 或 **Reject**。**Revert last AI apply** 可以撤销最近一次已应用的改动，
+3. 可选：装上配套的 **skill**。注册端点只告诉客户端「有两个工具」，而指纹和 hex ClientHello 谁压谁、
+   提议必须带哪些 acknowledgement、真实 ClientHello 怎么抓出来，都要靠这份 skill。标签页里同样有
+   一键复制：
+
+   ```sh
+   mkdir -p ~/.claude/skills/awesome-tls-mcp && curl -fsSL -o ~/.claude/skills/awesome-tls-mcp/SKILL.md https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md
+   ```
+
+   ```sh
+   mkdir -p ~/.codex && curl -fsSL https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md >> ~/.codex/AGENTS.md
+   ```
+
+   skill 是 Claude Code 的机制，Codex 读的是纯指令文件，所以同一份内容直接追加进它的 `AGENTS.md`，
+   而不是再维护第二份文档。它是可选的，不会改变 Burp 里的任何行为，原文见
+   [`skills/awesome-tls-mcp/SKILL.md`](https://github.com/Robin528919/burp-awesome-tls-plus/blob/main/skills/awesome-tls-mcp/SKILL.md)。
+4. 有提议到达时，标签页上会出现一个圆点。它不会抢焦点，也不会自动弹窗。
+5. 看完 diff 后点 **Apply** 或 **Reject**。**Revert last AI apply** 可以撤销最近一次已应用的改动，
    直到有任何新的提交为止。
 
 ### 完整审计

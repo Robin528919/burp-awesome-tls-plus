@@ -29,6 +29,9 @@ relative_links:
 exclude:
   - src/
   - src-go/
+  # SKILL.md is fetched raw by AI clients; as a page its YAML front matter would render as a
+  # stray, badly titled entry in the sitemap.
+  - skills/
   - build/
   - gradle/
   - gradlew

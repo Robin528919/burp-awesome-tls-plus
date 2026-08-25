@@ -126,9 +126,25 @@ Enabling is per Burp session. The endpoint never comes back on its own after a r
    Both commands register the server **globally**, for every project. Drop `--scope user` to keep it
    to the current project instead. A globally registered client can reach this endpoint from any
    session, whenever it is enabled in Burp.
-3. When a proposal arrives, the tab is marked with a dot. It never steals focus or opens a dialog on
+3. Optionally install the companion **skill**. Registering the endpoint tells a client only that two
+   tools exist; the skill is what tells it which of a fingerprint and a hex ClientHello wins, the
+   acknowledgements a proposal has to carry, and how to capture a real ClientHello in the first
+   place. The tab copies these commands too:
+
+   ```sh
+   mkdir -p ~/.claude/skills/awesome-tls-mcp && curl -fsSL -o ~/.claude/skills/awesome-tls-mcp/SKILL.md https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md
+   ```
+
+   ```sh
+   mkdir -p ~/.codex && curl -fsSL https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md >> ~/.codex/AGENTS.md
+   ```
+
+   Skills are a Claude Code feature — Codex reads plain instructions, so the same file is appended to
+   its `AGENTS.md` rather than maintained as a second document. It is optional, changes nothing in
+   Burp, and the source is [`skills/awesome-tls-mcp/SKILL.md`](https://github.com/Robin528919/burp-awesome-tls-plus/blob/main/skills/awesome-tls-mcp/SKILL.md).
+4. When a proposal arrives, the tab is marked with a dot. It never steals focus or opens a dialog on
    its own.
-4. Review the diff and press **Apply** or **Reject**. **Revert last AI apply** undoes the most recent
+5. Review the diff and press **Apply** or **Reject**. **Revert last AI apply** undoes the most recent
    applied change, until anything else is committed.
 
 ### Full audit

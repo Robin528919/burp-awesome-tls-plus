@@ -58,6 +58,17 @@ final class AiControlPanel {
     /** What the server is called in a client's configuration. */
     private static final String SERVER_NAME = "awesome-tls";
 
+    /**
+     * The companion skill, served from the repository rather than the jar.
+     * <p>
+     * Registering the endpoint leaves a client knowing two tool names and their schemas, and
+     * nothing about fingerprint precedence, the acknowledgements a proposal must carry, or how a
+     * ClientHello is captured in the first place. Fetching it keeps one copy authoritative instead
+     * of shipping a snapshot that ages with the installed jar.
+     */
+    private static final String SKILL_URL = "https://raw.githubusercontent.com/Robin528919/"
+            + "burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md";
+
     private final Settings settings;
     private final Runnable onProposalChanged;
 
@@ -311,10 +322,21 @@ final class AiControlPanel {
                         + "project. Drop \"--scope user\" to keep it to the current project instead. "
                         + "A globally registered client can reach this endpoint from any session, "
                         + "whenever it is enabled here."));
+
+        var skillButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        skillButtons.add(copyButton("Install skill: Claude Code", Snippet.CLAUDE_SKILL));
+        skillButtons.add(copyButton("Install skill: Codex", Snippet.CODEX_SKILL));
+        panel.row(skillButtons);
+        panel.row(SettingsTab.descriptionText(
+                "Registering the endpoint only tells a client that two tools exist. These install "
+                        + "the usage guide alongside it \u2014 which of a fingerprint and a hex "
+                        + "ClientHello wins, the acknowledgements a proposal has to carry, and how "
+                        + "to capture a ClientHello \u2014 so the client does not have to guess. "
+                        + "Optional, and it changes nothing in Burp."));
         return panel;
     }
 
-    private enum Snippet {ENDPOINT, CLAUDE_CODE, CODEX, JSON}
+    private enum Snippet {ENDPOINT, CLAUDE_CODE, CODEX, JSON, CLAUDE_SKILL, CODEX_SKILL}
 
     private Snippet lastCopied = Snippet.ENDPOINT;
 
@@ -367,6 +389,12 @@ final class AiControlPanel {
                     + "    }\n"
                     + "  }\n"
                     + "}";
+            // Skills are a Claude Code concept; Codex reads plain instructions, so the same file
+            // is appended to its AGENTS.md rather than translated into a second document.
+            case CLAUDE_SKILL -> "mkdir -p ~/.claude/skills/awesome-tls-mcp && curl -fsSL -o "
+                    + "~/.claude/skills/awesome-tls-mcp/SKILL.md " + SKILL_URL;
+            case CODEX_SKILL -> "mkdir -p ~/.codex && curl -fsSL " + SKILL_URL
+                    + " >> ~/.codex/AGENTS.md";
         };
     }
 
