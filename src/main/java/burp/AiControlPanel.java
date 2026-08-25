@@ -69,6 +69,7 @@ final class AiControlPanel {
     private final JLabel labelStatus = new JLabel();
     private final JLabel labelEndpoint = new JLabel();
     private final JLabel labelAuditState = new JLabel();
+    private final JTextArea textGoServer = SettingsTab.descriptionText(" ");
     private final JCheckBox checkBoxUnderstood =
             new JCheckBox("I understand and accept that any process on this machine can read these values");
     private final JCheckBox checkBoxFullAudit = new JCheckBox("Record everything to the audit trail");
@@ -175,6 +176,7 @@ final class AiControlPanel {
 
         labelEndpoint.setBorder(new EmptyBorder(0, 8, 4, 0));
         panel.row(labelEndpoint);
+        panel.row(textGoServer);
 
         // The disclosure, in full, every time. Section 4.2 requires it to be unavoidable rather
         // than something that scrolls past once during setup.
@@ -612,10 +614,42 @@ final class AiControlPanel {
                 + ". Everything above would " + (settings.aiControl().fullAudit() ? "" : "not ")
                 + "be written to the audit trail in full.");
 
+        describeGoServer();
+
         // Setting up and reviewing never happen at the same moment, so they do not have to share
         // the window. While the listener is down the panel is a decision; while it is up it is a
         // review surface, and the diff needs the room.
         panelSetup.setVisible(!running);
+    }
+
+    /**
+     * Says what the Go server is doing, and why when it is not doing it.
+     * <p>
+     * Everything else on this panel reports the local listener; this reports the one that actually
+     * carries traffic. It is worth its own line because the two can disagree — most usefully when
+     * a reload leaves a previous instance holding the port and this one never bound, which
+     * otherwise shows up only as an inspect result quietly claiming there is no listener.
+     */
+    private void describeGoServer() {
+        var status = settings.runtimeStatus();
+        var spoof = status.spoof();
+        if (spoof != null && spoof.running() && spoof.actualAddress() != null) {
+            textGoServer.setText("The Go server is listening on " + spoof.actualAddress() + ".");
+            return;
+        }
+
+        var reason = spoof == null ? null : spoof.lastError();
+        if (reason != null && !reason.isBlank()) {
+            textGoServer.setText("The Go server this extension controls is not listening: " + reason
+                    + "\n\nIf the port is already in use, it is most likely held by a previous load "
+                    + "of this extension. A native library cannot be unloaded, so reloading the "
+                    + "extension leaves the old one running and the new one never binds — meaning "
+                    + "traffic is still being handled by the previous build. Restart Burp to clear it.");
+            return;
+        }
+        textGoServer.setText("The Go server this extension controls reports that it is not listening. "
+                + "If traffic is still working, it is being handled by a previous load of this "
+                + "extension; restart Burp to make this instance the one serving.");
     }
 
     private void showProposal() {
