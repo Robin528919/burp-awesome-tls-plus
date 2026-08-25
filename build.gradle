@@ -4,14 +4,152 @@ repositories {
     mavenCentral()
 }
 
+// Pinned rather than inherited from whatever JDK happens to be on the machine: ADR-0001 section
+// 16.6. Burp ships its own runtime (currently 24), so the bytecode level has to be a decision, not
+// an accident of the build host.
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
 dependencies {
     compileOnly "net.portswigger.burp.extensions:montoya-api:2026.4"
     implementation 'net.java.dev.jna:jna:5.18.1'
     implementation 'com.google.code.gson:gson:2.14.0'
+
+    // Embedded HTTP for the local MCP endpoint. Jetty core only — no servlet container, no XNIO,
+    // and nothing from jdk.httpserver, which Burp's bundled runtime does not include (verified
+    // against its JRE 24.0.1: `java --list-modules` has no jdk.httpserver, so
+    // com.sun.net.httpserver is simply absent). See ADR-0001 section 16.5.
+    implementation 'org.eclipse.jetty:jetty-server:12.0.16'
+
+    // The probes drive the real settings stack, so they need everything the extension needs,
+    // including the Montoya API the smoke test stands in for.
+    testImplementation sourceSets.main.output
+    testImplementation "net.portswigger.burp.extensions:montoya-api:2026.4"
+    testImplementation 'net.java.dev.jna:jna:5.18.1'
+    testImplementation 'com.google.code.gson:gson:2.14.0'
+    testImplementation 'org.eclipse.jetty:jetty-server:12.0.16'
+}
+
+// The self-checks are executable main methods rather than a test framework, matching what the
+// rest of this repository already does. This lists them in one place so a change cannot quietly
+// stop running one of them.
+def selfChecks = [
+        'burp.control.HostKey',
+        'burp.control.Jcs',
+        'burp.control.ProxyUrl',
+        'burp.control.Validation',
+        'burp.control.SettingsSnapshot',
+        'burp.RuleMatcher',
+        'burp.RuleStore',
+        'burp.control.TransactionJournal',
+        'burp.control.AuditTrail',
+        'burp.control.Analysis',
+        'burp.control.EffectiveConfigs',
+        'burp.control.ThreeWayMerge',
+        'burp.control.Proposal',
+        'burp.control.SettingsControlCheck',
+        'burp.control.AiSettingsServiceCheck',
+        'burp.control.McpServerCheck',
+]
+
+selfChecks.eachWithIndex { className, index ->
+    tasks.register("selfCheck${index}", JavaExec) {
+        group = 'verification'
+        description = "Runs ${className}"
+        classpath = sourceSets.main.runtimeClasspath
+        mainClass = className
+        jvmArgs '-ea'
+    }
+}
+
+tasks.register('selfCheck') {
+    group = 'verification'
+    description = 'Runs every executable self-check.'
+    dependsOn selfChecks.indices.collect { "selfCheck${it}" }
+}
+
+// Observes, rather than assumes, that inspect and propose resolve no names. The resolver provider
+// it installs is registered through META-INF/services on the test classpath only, so it never ends
+// up in the shipped jar.
+//
+// It needs java.net.spi.InetAddressResolverProvider, which arrived in Java 18, while the extension
+// itself is pinned to 17. Rather than raise the extension's baseline for a probe, this compiles and
+// runs the probe on a newer toolchain when one is available and says so plainly when it is not.
+def resolverJdk = 21
+def resolverCompiler = null
+def resolverLauncher = null
+try {
+    resolverCompiler = javaToolchains.compilerFor {
+        languageVersion = JavaLanguageVersion.of(resolverJdk)
+    }.get()
+    resolverLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(resolverJdk)
+    }.get()
+} catch (Exception ignored) {
+    // No JDK 18+ registered. The probe is skipped with an explanation rather than failing a build
+    // on a machine that simply has an older JDK installed.
+}
+
+tasks.named('compileTestJava') {
+    onlyIf { resolverCompiler != null }
+    if (resolverCompiler != null) {
+        javaCompiler = resolverCompiler
+        options.release = resolverJdk
+    }
+}
+
+tasks.register('noNetworkCheck', JavaExec) {
+    group = 'verification'
+    description = 'Verifies that inspect and propose perform no DNS resolution.'
+    dependsOn 'compileTestJava'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'probe.NoNetworkProbe'
+    jvmArgs '-ea'
+    onlyIf {
+        if (resolverLauncher == null) {
+            logger.lifecycle('noNetworkCheck skipped: it needs a registered JDK ' + resolverJdk
+                    + '+ for java.net.spi.InetAddressResolverProvider. Point Gradle at one with '
+                    + '-Porg.gradle.java.installations.paths=/path/to/jdk')
+            return false
+        }
+        return true
+    }
+    if (resolverLauncher != null) {
+        javaLauncher = resolverLauncher
+    }
+}
+
+// Loads the extension against a stand-in Montoya API, which is the only way to exercise the Burp
+// wiring — the part whose failure mode is "the extension does not load".
+tasks.register('extensionSmoke', JavaExec) {
+    group = 'verification'
+    description = 'Initializes the extension against a stand-in Montoya API.'
+    dependsOn 'compileTestJava'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'probe.ExtensionSmoke'
+    jvmArgs '-ea'
+    onlyIf { resolverLauncher != null }
+    if (resolverLauncher != null) {
+        javaLauncher = resolverLauncher
+    }
+}
+
+tasks.register('checkAll') {
+    group = 'verification'
+    description = 'Compiles and runs every self-check.'
+    dependsOn 'selfCheck', 'noNetworkCheck', 'extensionSmoke'
 }
 
 tasks.register('buildJar', Jar) {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     from { configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
     with jar
+    // Jetty ships signed jars; keeping the signatures in a shaded fat jar makes the JVM refuse to
+    // load the classes with a SecurityException about an invalid signature file.
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+    // The cgo-generated header is a build by-product, not something the extension loads.
+    exclude '**/*.h'
 }
