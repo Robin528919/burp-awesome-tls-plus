@@ -2,306 +2,355 @@ package burp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.logging.Logging;
-import burp.api.montoya.persistence.Preferences;
+import burp.control.AiSettingsService;
+import burp.control.AuditTrail;
+import burp.control.BusinessSettings;
+import burp.control.McpServer;
+import burp.control.Ports;
+import burp.control.RuntimeStatus;
+import burp.control.SettingsControl;
+import burp.control.SettingsSnapshot;
+import burp.control.TransactionJournal;
 import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
+import com.google.gson.JsonParser;
 
 import java.io.IOException;
+import java.nio.file.Path;
+import java.time.Clock;
 import java.util.List;
-import java.util.Objects;
+import java.util.Set;
+import java.util.function.Supplier;
 
 /**
- * Configuration store for the extension.
+ * Composition root for the settings, and the face the Swing UI talks to.
  * <p>
- * Every value is cached in memory and served from there, because
- * {@link #toTransportConfig(String)} runs on every proxied request and Burp's
- * {@link Preferences} is a persistence layer, not a hash map. Writes update the cache and
- * the store together. Fields are volatile because the UI writes them on the EDT while
- * proxy threads read them concurrently.
+ * Every read and write now goes through {@link SettingsControl}: ADR-0001 section 3 makes that the
+ * single seam so that the UI, the MCP adapter and the request path cannot end up with three
+ * slightly different ideas of what is valid, what the current values are, and when a change takes
+ * effect. This class holds no state of its own beyond the wiring.
+ * <p>
+ * {@link #toTransportConfig(String)} runs on every proxied request, so it does exactly one volatile
+ * read and no I/O.
  */
 public class Settings {
-    private final Preferences storage;
     private final Logging logging;
-    private final Gson gson = new Gson();
-
-    private final String spoofProxyAddress = "SpoofProxyAddress";
-    private final String interceptProxyAddress = "InterceptProxyAddress";
-    private final String burpProxyAddress = "BurpProxyAddress";
-    private final String fingerprint = "Fingerprint";
-    private final String hexClientHello = "HexClientHello";
-    private final String useInterceptedFingerprint = "UseInterceptedFingerprint";
-    private final String httpTimeout = "HttpTimeout";
-    private final String externalProxyUrl = "ExternalProxyUrl";
-
-    /**
-     * Where rules used to live. Still read once so existing setups migrate, and deliberately not
-     * deleted afterwards so downgrading keeps working.
-     */
-    private final String legacyDomainRules = "DomainRules";
-
-    public static final String DEFAULT_SPOOF_PROXY_ADDRESS = "127.0.0.1:8887";
-    public static final String DEFAULT_INTERCEPT_PROXY_ADDRESS = "127.0.0.1:8886";
-    public static final String DEFAULT_BURP_PROXY_ADDRESS = "127.0.0.1:8080";
-    public static final Integer DEFAULT_HTTP_TIMEOUT = 30;
-    public static final String DEFAULT_TLS_FINGERPRINT = "default";
-    public static final Boolean USE_INTERCEPTED_FINGERPRINT = false;
-    public static final String DEFAULT_EXTERNAL_PROXY_URL = "";
-
-    private volatile String cachedSpoofProxyAddress;
-    private volatile String cachedInterceptProxyAddress;
-    private volatile String cachedBurpProxyAddress;
-    private volatile String cachedFingerprint;
-    private volatile String cachedHexClientHello;
-    private volatile String cachedExternalProxyUrl;
-    private volatile int cachedHttpTimeout;
-    private volatile boolean cachedUseInterceptedFingerprint;
-
-    /**
-     * Immutable snapshot; replaced wholesale on save so readers never see a half-written list.
-     */
-    private volatile List<FingerprintRule> cachedRules;
-    private volatile RuleMatcher matcher;
-
     private final RuleStore ruleStore;
+    private final BurpPreferencesPort preferences;
+    private final AiControlSettings aiControl;
+    private final SettingsControl control;
+    private final AuditTrail audit;
+    private final AiSettingsService aiService;
+    private final McpServer mcpServer;
+
+    /** Where the UI reports whether it is holding an edit that has not been committed. */
+    private volatile Supplier<List<String>> dirtyReporter = List::of;
 
     public Settings(MontoyaApi api) {
-        this.storage = api.persistence().preferences();
         this.logging = api.logging();
-        this.ruleStore = RuleStore.inConfigDir(api.logging()::logToError);
+        this.preferences = new BurpPreferencesPort(api.persistence().preferences());
+        this.aiControl = new AiControlSettings(api.persistence().preferences());
 
-        this.cachedSpoofProxyAddress = read(spoofProxyAddress, DEFAULT_SPOOF_PROXY_ADDRESS);
-        this.cachedInterceptProxyAddress = read(interceptProxyAddress, DEFAULT_INTERCEPT_PROXY_ADDRESS);
-        this.cachedBurpProxyAddress = read(burpProxyAddress, DEFAULT_BURP_PROXY_ADDRESS);
-        this.cachedFingerprint = read(fingerprint, DEFAULT_TLS_FINGERPRINT);
-        this.cachedHexClientHello = read(hexClientHello, "");
-        this.cachedExternalProxyUrl = read(externalProxyUrl, DEFAULT_EXTERNAL_PROXY_URL);
-        this.cachedHttpTimeout = read(httpTimeout, DEFAULT_HTTP_TIMEOUT);
-        this.cachedUseInterceptedFingerprint = read(useInterceptedFingerprint, USE_INTERCEPTED_FINGERPRINT);
+        var configDir = RuleStore.configDir();
+        this.ruleStore = new RuleStore(configDir.resolve(RuleStore.FILE_NAME), logging::logToError);
+        this.audit = new AuditTrail(configDir.resolve("audit"));
 
-        applyRules(loadRulesAtStartup());
+        Ports.Log log = new Ports.Log() {
+            @Override
+            public void info(String message) {
+                logging.logToOutput("Awesome TLS: " + message);
+            }
+
+            @Override
+            public void error(String message) {
+                logging.logToError("Awesome TLS: " + message);
+            }
+        };
+
+        this.control = new SettingsControl(
+                preferences,
+                new RuleFileAdapter(ruleStore),
+                new TransactionJournal(configDir.resolve(TransactionJournal.FILE_NAME)),
+                audit,
+                aiControl::fullAudit,
+                this::runtimeStatus,
+                this::fingerprintSet,
+                () -> dirtyReporter.get(),
+                log);
+
+        this.aiService = new AiSettingsService(control, audit, aiControl::fullAudit,
+                aiControl::enabled, Clock.systemUTC());
+        control.addListener(aiService::onCommitted);
+
+        this.mcpServer = new McpServer(aiService, audit, aiControl::fullAudit, log,
+                api.extension().filename() == null ? "unknown" : "1");
+
+        // Recovery first, then the pre-rename adoption, then the old preference key. The order is
+        // fixed by ADR-0001 section 11: a migration that ran first could overwrite the very state
+        // recovery is about to restore.
+        var outcome = control.start(RuleStore.legacyConfigDir(), legacyRules());
+        if (outcome instanceof SettingsControl.Outcome.RecoveryRequired recovery) {
+            logging.logToError("Awesome TLS: settings are not usable until this is resolved — "
+                    + recovery.message());
+        }
     }
 
     /**
-     * Rules come from the JSON file. A setup created before the file existed still has them in
-     * Burp's preference store, so migrate those once.
+     * Rules from before the rules file existed. Deliberately left in the preference store after
+     * migration so downgrading still finds them.
      */
-    private List<FingerprintRule> loadRulesAtStartup() {
-        if (ruleStore.exists()) {
-            return ruleStore.load();
-        }
-
-        var legacy = loadLegacyRules();
-        if (legacy.isEmpty()) {
-            return List.of();
-        }
-
-        try {
-            ruleStore.save(legacy);
-            logging.logToOutput("Awesome TLS: migrated " + legacy.size() + " domain rule(s) to " + ruleStore.path());
-        } catch (IOException e) {
-            // Keep going with the rules in memory; they are still in the preference store.
-            logging.logToError("Awesome TLS: could not migrate domain rules to " + ruleStore.path() + ": " + e);
-        }
-
-        return legacy;
-    }
-
-    private List<FingerprintRule> loadLegacyRules() {
-        var json = this.storage.getString(this.legacyDomainRules);
+    private List<FingerprintRule> legacyRules() {
+        var json = preferences.legacyRulesJson();
         if (json == null || json.isBlank()) {
             return List.of();
         }
-
         try {
-            List<FingerprintRule> parsed = gson.fromJson(json, new TypeToken<List<FingerprintRule>>() {
-            }.getType());
+            List<FingerprintRule> parsed = new Gson().fromJson(json,
+                    new com.google.gson.reflect.TypeToken<List<FingerprintRule>>() {
+                    }.getType());
             if (parsed == null) {
                 return List.of();
             }
-            return parsed.stream().filter(Objects::nonNull).map(FingerprintRule::normalized).toList();
+            var rules = new java.util.ArrayList<FingerprintRule>();
+            for (var rule : parsed) {
+                if (rule != null) {
+                    rules.add(rule.normalized());
+                }
+            }
+            return List.copyOf(rules);
         } catch (Exception e) {
-            logging.logToError("Failed to parse the stored domain rules, ignoring them: " + e);
+            logging.logToError("Awesome TLS: could not read the rules stored under the old "
+                    + "preference key, ignoring them: " + e);
             return List.of();
         }
     }
 
-    private String read(String key, String defaultValue) {
-        var value = this.storage.getString(key);
-        if (value == null || value.isEmpty()) {
-            this.write(key, defaultValue);
-            return defaultValue;
+    // ------------------------------------------------------------------ wiring
+
+    public SettingsControl control() {
+        return control;
+    }
+
+    public AiSettingsService aiService() {
+        return aiService;
+    }
+
+    public McpServer mcpServer() {
+        return mcpServer;
+    }
+
+    AiControlSettings aiControl() {
+        return aiControl;
+    }
+
+    AuditTrail audit() {
+        return audit;
+    }
+
+    /**
+     * Lets the settings tab say whether it is holding an unsaved edit. A proposal cannot be created
+     * or applied while it is, because either would fight with the editor for the same fields.
+     */
+    void setDirtyReporter(Supplier<List<String>> reporter) {
+        this.dirtyReporter = reporter == null ? List::of : reporter;
+    }
+
+    public SettingsSnapshot snapshot() {
+        return control.snapshot();
+    }
+
+    public RuntimeStatus runtimeStatus() {
+        try {
+            var json = ServerLibrary.INSTANCE.GetRuntimeStatus();
+            if (json == null || json.isBlank()) {
+                return RuntimeStatus.unknown();
+            }
+            var root = JsonParser.parseString(json).getAsJsonObject();
+            return new RuntimeStatus(
+                    listener(root, "spoof"),
+                    listener(root, "intercept"),
+                    emptyToNull(string(root, "burpUpstreamEndpoint")),
+                    emptyToNull(string(root, "burpUpstreamError")));
+        } catch (Throwable e) {
+            // The native library may not be loaded at all. Reporting nothing is honest; guessing
+            // that the configured address is live is what section 12 forbids.
+            return RuntimeStatus.unknown();
         }
-        return value;
     }
 
-    private Boolean read(String key, Boolean defaultValue) {
-        var value = this.storage.getBoolean(key);
-        if (value == null) {
-            this.storage.setBoolean(key, defaultValue);
-            return defaultValue;
+    private static RuntimeStatus.Listener listener(com.google.gson.JsonObject root, String name) {
+        if (!root.has(name) || !root.get(name).isJsonObject()) {
+            return RuntimeStatus.Listener.stopped();
         }
-        return value;
-    }
-
-    private Integer read(String key, Integer defaultValue) {
-        var value = this.storage.getInteger(key);
-        if (value == null) {
-            this.storage.setInteger(key, defaultValue);
-            return defaultValue;
+        var object = root.getAsJsonObject(name);
+        var state = string(object, "state");
+        RuntimeStatus.State parsed;
+        try {
+            parsed = RuntimeStatus.State.valueOf(state);
+        } catch (IllegalArgumentException e) {
+            parsed = RuntimeStatus.State.STOPPED;
         }
-        return value;
+        return new RuntimeStatus.Listener(parsed,
+                emptyToNull(string(object, "actualAddress")),
+                emptyToNull(string(object, "lastError")));
     }
 
-    public void write(String key, String value) {
-        this.storage.setString(key, value);
+    private static String string(com.google.gson.JsonObject object, String key) {
+        return object.has(key) && object.get(key).isJsonPrimitive() ? object.get(key).getAsString() : "";
     }
 
-    public void write(String key, Boolean value) {
-        this.storage.setBoolean(key, value);
+    private static String emptyToNull(String value) {
+        return value == null || value.isEmpty() ? null : value;
     }
 
-    public void write(String key, Integer value) {
-        this.storage.setInteger(key, value);
-    }
+    // ------------------------------------------------------------------ reading
 
     public String getSpoofProxyAddress() {
-        return this.cachedSpoofProxyAddress;
+        return snapshot().settings().spoofProxyAddress();
     }
 
-    public void setSpoofProxyAddress(String spoofProxyAddress) {
-        this.cachedSpoofProxyAddress = spoofProxyAddress;
-        this.write(this.spoofProxyAddress, spoofProxyAddress);
+    /**
+     * @return where the Go server is really listening, which is not the same thing as the
+     * configured address once that has been changed. Requests must keep going to the live one until
+     * the extension is reloaded, or they go to a port nothing is bound to.
+     */
+    public String activeSpoofProxyAddress() {
+        var spoof = runtimeStatus().spoof();
+        if (spoof != null && spoof.running() && spoof.actualAddress() != null) {
+            return spoof.actualAddress();
+        }
+        return getSpoofProxyAddress();
     }
 
     public String getInterceptProxyAddress() {
-        return this.cachedInterceptProxyAddress;
-    }
-
-    public void setInterceptProxyAddress(String interceptProxyAddress) {
-        this.cachedInterceptProxyAddress = interceptProxyAddress;
-        this.write(this.interceptProxyAddress, interceptProxyAddress);
+        return snapshot().settings().interceptProxyAddress();
     }
 
     public String getBurpProxyAddress() {
-        return this.cachedBurpProxyAddress;
-    }
-
-    public void setBurpProxyAddress(String burpProxyAddress) {
-        this.cachedBurpProxyAddress = burpProxyAddress;
-        this.write(this.burpProxyAddress, burpProxyAddress);
+        return snapshot().settings().burpProxyAddress();
     }
 
     public Boolean getUseInterceptedFingerprint() {
-        return this.cachedUseInterceptedFingerprint;
-    }
-
-    public void setUseInterceptedFingerprint(Boolean useInterceptedFingerprint) {
-        this.cachedUseInterceptedFingerprint = useInterceptedFingerprint;
-        this.write(this.useInterceptedFingerprint, useInterceptedFingerprint);
+        return snapshot().settings().useInterceptedFingerprint();
     }
 
     public int getHttpTimeout() {
-        return this.cachedHttpTimeout;
-    }
-
-    public void setHttpTimeout(Integer httpTimeout) {
-        this.cachedHttpTimeout = httpTimeout;
-        this.write(this.httpTimeout, httpTimeout);
+        return snapshot().settings().httpTimeout();
     }
 
     public String getFingerprint() {
-        return this.cachedFingerprint;
-    }
-
-    public void setFingerprint(String fingerprint) {
-        this.cachedFingerprint = fingerprint;
-        this.write(this.fingerprint, fingerprint);
+        return snapshot().settings().fingerprint();
     }
 
     public String getHexClientHello() {
-        return this.cachedHexClientHello;
-    }
-
-    public void setHexClientHello(String hexClientHello) {
-        this.cachedHexClientHello = hexClientHello;
-        this.write(this.hexClientHello, hexClientHello);
+        return snapshot().settings().hexClientHello();
     }
 
     public String getExternalProxyUrl() {
-        return this.cachedExternalProxyUrl;
-    }
-
-    public void setExternalProxyUrl(String externalProxyUrl) {
-        this.cachedExternalProxyUrl = externalProxyUrl;
-        this.write(this.externalProxyUrl, externalProxyUrl);
+        return snapshot().settings().externalProxyUrl();
     }
 
     /**
-     * @return the configured per-domain rules, in display order.
+     * @return the configured per-domain rules, in storage order, including rows that are not usable
+     * yet. The table shows all of them; the matcher uses only the usable ones.
      */
     public List<FingerprintRule> getRules() {
-        return this.cachedRules;
+        return snapshot().storedRules();
     }
 
-    /**
-     * Applies rules and writes them to disk.
-     * <p>
-     * The in-memory state is updated first so an edit takes effect on the next request even if
-     * the write fails; the caller is expected to surface the failure so the user knows the change
-     * will not survive a restart.
-     *
-     * @throws IOException if the rules could not be written to disk.
-     */
-    public void setRules(List<FingerprintRule> rules) throws IOException {
-        applyRules(rules);
-        ruleStore.save(this.cachedRules);
-    }
-
-    /**
-     * Updates the live configuration without touching disk.
-     */
-    private void applyRules(List<FingerprintRule> rules) {
-        // Filter nulls rather than using List.copyOf directly: hand-edited JSON such as
-        // "[null, {...}]" deserializes to a list with null entries, which copyOf rejects.
-        var snapshot = rules.stream().filter(Objects::nonNull).toList();
-        this.cachedRules = snapshot;
-        this.matcher = new RuleMatcher(snapshot);
-    }
-
-    /**
-     * @return where the rules are stored, for display and for import/export.
-     */
     public RuleStore getRuleStore() {
-        return this.ruleStore;
+        return ruleStore;
     }
 
     public String[] getFingerprints() {
-        return ServerLibrary.INSTANCE.GetFingerprints().split("\n");
+        try {
+            return ServerLibrary.INSTANCE.GetFingerprints().split("\n");
+        } catch (Throwable e) {
+            logging.logToError("Awesome TLS: could not read the fingerprint list: " + e);
+            return new String[0];
+        }
     }
+
+    public Set<String> fingerprintSet() {
+        return Set.of(getFingerprints());
+    }
+
+    // ------------------------------------------------------------------ writing
+
+    /**
+     * Saves the global settings as one change. Every field goes together: an earlier version wrote
+     * them one at a time, which meant a failure halfway left half the form applied.
+     */
+    public SettingsControl.Outcome saveGlobals(BusinessSettings settings) {
+        return control.commit(snapshot().withSettings(settings), TransactionJournal.Source.UI_SAVE);
+    }
+
+    public SettingsControl.Outcome saveRules(List<FingerprintRule> rules,
+                                             TransactionJournal.Source source) {
+        return control.commit(snapshot().withRules(rules), source);
+    }
+
+    /**
+     * Saves the global settings and the rules together, so one Save leaves nothing pending.
+     */
+    public SettingsControl.Outcome saveAll(BusinessSettings settings, List<FingerprintRule> rules) {
+        return control.commit(SettingsSnapshot.of(settings, rules), TransactionJournal.Source.UI_SAVE);
+    }
+
+    // ------------------------------------------------------------------ request path
 
     /**
      * Builds the per-request configuration sent to the Go server, applying the most specific
      * domain rule for {@code host} on top of the global defaults.
      */
     public TransportConfig toTransportConfig(String host) {
+        // One volatile read: the settings and the matcher were published together, so they cannot
+        // disagree with each other however the change was made.
+        var snapshot = control.snapshot();
+        var settings = snapshot.settings();
+
         var transportConfig = new TransportConfig();
-        transportConfig.Fingerprint = this.getFingerprint();
-        transportConfig.HexClientHello = this.getHexClientHello();
-        transportConfig.HttpTimeout = this.getHttpTimeout();
-        transportConfig.ExternalProxyUrl = this.getExternalProxyUrl();
+        transportConfig.Fingerprint = settings.fingerprint();
+        transportConfig.HexClientHello = settings.hexClientHello();
+        transportConfig.HttpTimeout = settings.httpTimeout();
+        transportConfig.ExternalProxyUrl = settings.externalProxyUrl();
 
         // These stay global on purpose: the Go server starts and stops a single shared
         // intercept proxy based on these values, so varying them per request would make it
-        // thrash (see server.go:51-63).
-        transportConfig.UseInterceptedFingerprint = this.getUseInterceptedFingerprint();
-        transportConfig.BurpAddr = this.getBurpProxyAddress();
-        transportConfig.InterceptProxyAddr = this.getInterceptProxyAddress();
+        // thrash (see server.go).
+        transportConfig.UseInterceptedFingerprint = settings.useInterceptedFingerprint();
+        transportConfig.BurpAddr = settings.burpProxyAddress();
+        transportConfig.InterceptProxyAddr = settings.interceptProxyAddress();
 
-        var rule = this.matcher.match(host);
+        var rule = snapshot.matcher().match(host);
         if (rule != null) {
             rule.applyTo(transportConfig);
         }
 
         return transportConfig;
+    }
+
+    /**
+     * The rules file, with the adoption step exposed so startup can order it after recovery.
+     */
+    private record RuleFileAdapter(RuleStore store) implements SettingsControl.RuleFileAdapter {
+        @Override
+        public RuleStore.Probe probe() {
+            return store.probe();
+        }
+
+        @Override
+        public void saveIfUnchanged(String expectedDigest, List<FingerprintRule> rules) throws IOException {
+            store.saveIfUnchanged(expectedDigest, rules);
+        }
+
+        @Override
+        public Path path() {
+            return store.path();
+        }
+
+        @Override
+        public boolean adoptFrom(Path legacyDir) {
+            return store.adoptFrom(legacyDir);
+        }
     }
 }

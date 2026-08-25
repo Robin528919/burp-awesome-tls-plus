@@ -36,6 +36,9 @@ public class SettingsTab {
     private static final int TAB_DEFAULTS = 0;
     private static final int TAB_RULES = 1;
     private static final int TAB_ADVANCED = 2;
+    private static final int TAB_AI_CONTROL = 3;
+
+    private static final String AI_CONTROL_TITLE = "AI Control";
 
     /**
      * Keeps text fields to a readable width instead of stretching across Burp's full window.
@@ -77,6 +80,15 @@ public class SettingsTab {
 
     private final List<String> fingerprints;
 
+    private final AiControlPanel aiControlPanel;
+
+    /**
+     * The revision this tab last committed. A commit made from here has already left the form and
+     * the table in the right state; reloading in response to it would reset the user's selection
+     * and scroll position for no reason.
+     */
+    private volatile String selfCommittedRevision;
+
     private final Timer autoSaveTimer;
 
     /**
@@ -107,6 +119,8 @@ public class SettingsTab {
         tabs.addTab("Defaults", buildDefaultsPanel());
         tabs.addTab("Domain rules", buildRulesPanel());
         tabs.addTab("Advanced", buildAdvancedPanel());
+        this.aiControlPanel = new AiControlPanel(settings, this::refreshPendingBadge);
+        tabs.addTab(AI_CONTROL_TITLE, aiControlPanel.getUI());
 
         panelMain.setBorder(new EmptyBorder(8, 8, 8, 8));
         panelMain.add(buildStatusBar(), BorderLayout.NORTH);
@@ -121,7 +135,27 @@ public class SettingsTab {
             }
         });
 
+        // The tab has to be able to say whether it is holding an edit, because a proposal is
+        // reviewed against committed settings and nothing else.
+        settings.setDirtyReporter(this::dirtyReasons);
+        settings.control().addListener(snapshot -> onSettingsCommitted());
+
         load();
+        refreshPendingBadge();
+    }
+
+    /**
+     * Marks the tab when a proposal is waiting. Deliberately just a label: ADR-0001 section 9
+     * forbids stealing focus or opening a dialog, because a proposal can arrive at any moment and
+     * an unexpected modal over someone's work is how a review gets clicked through.
+     */
+    private void refreshPendingBadge() {
+        SwingUtilities.invokeLater(() -> {
+            var proposal = settings.aiService().pending();
+            var waiting = proposal != null
+                    && proposal.status() == burp.control.Proposal.Status.PENDING;
+            tabs.setTitleAt(TAB_AI_CONTROL, waiting ? AI_CONTROL_TITLE + " \u2022" : AI_CONTROL_TITLE);
+        });
     }
 
     public JPanel getUI() {
@@ -146,7 +180,7 @@ public class SettingsTab {
         try {
             return List.of(settings.getFingerprints());
         } catch (Throwable t) {
-            return List.of(Settings.DEFAULT_TLS_FINGERPRINT);
+            return List.of(burp.control.BusinessSettings.DEFAULT_FINGERPRINT);
         }
     }
 
@@ -563,7 +597,7 @@ public class SettingsTab {
      * Wrapping, non-editable body text. A plain JLabel would clip instead of wrapping, and HTML
      * is not an option because Burp renders it literally.
      */
-    private static JTextArea descriptionText(String text) {
+    static JTextArea descriptionText(String text) {
         var area = new JTextArea(text);
         area.setEditable(false);
         area.setOpaque(false);
@@ -605,16 +639,36 @@ public class SettingsTab {
     }
 
     /**
-     * @return an error message if the rules could not be written to disk, else null.
+     * @return an error message if the rules could not be committed, else null.
+     * <p>
+     * Note what changed with ADR-0001: rules are no longer applied to the live configuration first
+     * and written afterwards. A change that cannot be stored is a change that does not happen, so
+     * that what is running and what is on disk cannot drift apart.
      */
     private String writeRules() {
-        try {
-            settings.setRules(ruleTableModel.snapshot());
-            return null;
-        } catch (IOException e) {
-            return "Rules are active but could NOT be written to "
-                    + settings.getRuleStore().path() + ": " + e.getMessage();
+        var outcome = settings.saveRules(ruleTableModel.snapshot(),
+                burp.control.TransactionJournal.Source.RULES_AUTOSAVE);
+        rememberSelfCommit(outcome);
+        return outcomeError(outcome, "Domain rules were NOT saved");
+    }
+
+    private void rememberSelfCommit(burp.control.SettingsControl.Outcome outcome) {
+        if (outcome instanceof burp.control.SettingsControl.Outcome.Committed committed) {
+            selfCommittedRevision = committed.snapshot().revision();
         }
+    }
+
+    /**
+     * @return a message for a failed commit, or null when it succeeded.
+     */
+    private static String outcomeError(burp.control.SettingsControl.Outcome outcome, String prefix) {
+        if (outcome instanceof burp.control.SettingsControl.Outcome.Committed) {
+            return null;
+        }
+        if (outcome instanceof burp.control.SettingsControl.Outcome.RecoveryRequired recovery) {
+            return prefix + ". " + recovery.message();
+        }
+        return prefix + ": " + ((burp.control.SettingsControl.Outcome.Failed) outcome).message();
     }
 
     private void exportRules() {
@@ -759,24 +813,17 @@ public class SettingsTab {
         var addressChanged = !textFieldSpoofProxyAddress.getText().trim().equals(settings.getSpoofProxyAddress())
                 || !textFieldInterceptProxyAddress.getText().trim().equals(settings.getInterceptProxyAddress());
 
-        settings.setSpoofProxyAddress(textFieldSpoofProxyAddress.getText().trim());
-        settings.setFingerprint(comboBoxFingerprint.getValue());
-        settings.setHexClientHello(textFieldHexClientHello.getText().trim());
-        settings.setExternalProxyUrl(textFieldExternalProxyUrl.getText().trim());
-        settings.setHttpTimeout((Integer) spinnerHttpTimeout.getValue());
-
-        settings.setUseInterceptedFingerprint(checkBoxUseInterceptedFingerprint.isSelected());
-        settings.setInterceptProxyAddress(textFieldInterceptProxyAddress.getText().trim());
-        settings.setBurpProxyAddress(textFieldBurpProxyAddress.getText().trim());
-
-        // Flush any rule edit still inside the debounce window, so one Save leaves nothing pending.
-        if (autoSaveTimer.isRunning()) {
-            autoSaveTimer.stop();
-            var ruleError = writeRules();
-            if (ruleError != null) {
-                showFeedback(ruleError, true);
-                return;
-            }
+        // One commit for the whole form, rules included. Writing the fields one at a time meant a
+        // failure halfway through left half the form applied and half not, with nothing saying so.
+        // Flushing the rule debounce here is also what makes Save leave nothing pending, which the
+        // AI Control tab depends on: a proposal cannot be reviewed against a draft.
+        autoSaveTimer.stop();
+        var outcome = settings.saveAll(formSettings(), ruleTableModel.snapshot());
+        rememberSelfCommit(outcome);
+        var failure = outcomeError(outcome, "Not saved");
+        if (failure != null) {
+            showFeedback(failure, true);
+            return;
         }
 
         // Rule cells show the values they inherit from this tab, so they are now stale.
@@ -787,6 +834,72 @@ public class SettingsTab {
             message += " Reload the extension for the new listen address to take effect.";
         }
         showFeedback(message, false);
+    }
+
+    /**
+     * @return the global settings exactly as the form currently reads them.
+     */
+    private burp.control.BusinessSettings formSettings() {
+        return new burp.control.BusinessSettings(
+                textFieldSpoofProxyAddress.getText().trim(),
+                textFieldInterceptProxyAddress.getText().trim(),
+                textFieldBurpProxyAddress.getText().trim(),
+                comboBoxFingerprint.getValue(),
+                textFieldHexClientHello.getText().trim(),
+                checkBoxUseInterceptedFingerprint.isSelected(),
+                (Integer) spinnerHttpTimeout.getValue(),
+                textFieldExternalProxyUrl.getText().trim());
+    }
+
+    /**
+     * Why a proposal cannot be created or applied right now.
+     * <p>
+     * ADR-0001 section 8.3: a settings change while the user has an edit in progress would either
+     * overwrite their draft or be overwritten by it. Reporting the draft and refusing is the only
+     * option that does not lose someone's work.
+     */
+    List<String> dirtyReasons() {
+        var reasons = new java.util.ArrayList<String>();
+        if (ruleTable.getCellEditor() != null) {
+            reasons.add("ACTIVE_CELL_EDITOR");
+        }
+        if (autoSaveTimer.isRunning()) {
+            reasons.add("PENDING_AUTOSAVE");
+        }
+        if (!formSettings().sameAs(settings.snapshot().settings())) {
+            reasons.add("UNSAVED_UI_DRAFT");
+        }
+        return List.copyOf(reasons);
+    }
+
+    /**
+     * Refreshes the form after a change committed somewhere else — an approved proposal, a revert,
+     * or startup recovery. Always on the EDT, and never while the user is mid-edit.
+     */
+    void onSettingsCommitted() {
+        var snapshot = settings.snapshot();
+        if (snapshot.revision().equals(selfCommittedRevision)) {
+            SwingUtilities.invokeLater(() -> {
+                ruleTable.repaint();
+                if (aiControlPanel != null) {
+                    aiControlPanel.refresh();
+                }
+            });
+            return;
+        }
+
+        SwingUtilities.invokeLater(() -> {
+            if (ruleTable.getCellEditor() != null || autoSaveTimer.isRunning()) {
+                // A refusal to overwrite a draft; the change is committed either way, and the tab
+                // catches up once the draft is resolved.
+                return;
+            }
+            load();
+            ruleTable.repaint();
+            if (aiControlPanel != null) {
+                aiControlPanel.refresh();
+            }
+        });
     }
 
     /**

@@ -33,12 +33,7 @@ public class Extension implements BurpExtension {
         this.settingsTab = new SettingsTab(settings);
 
         api.extension().setName("Awesome TLS");
-        api.extension().registerUnloadingHandler(() -> {
-            var err = ServerLibrary.INSTANCE.StopServer();
-            if (!err.isEmpty()) {
-                api.logging().logToError(err);
-            }
-        });
+        api.extension().registerUnloadingHandler(this::unload);
         var ui = settingsTab.getUI();
         // Burp's own styling pass: font size, colors and table line spacing, matched to the
         // active theme. Cheaper and more correct than deriving all of that from UIManager.
@@ -81,6 +76,30 @@ public class Extension implements BurpExtension {
         }).start();
     }
 
+    /**
+     * Releases everything this extension holds, within a bounded time.
+     * <p>
+     * The MCP listener goes first and unconditionally: it is the only thing here that is reachable
+     * from outside this process, and ADR-0001 section 14.2 puts closing it ahead of being able to
+     * record that it closed.
+     */
+    private void unload() {
+        try {
+            settings.mcpServer().stop();
+        } catch (RuntimeException e) {
+            api.logging().logToError("Awesome TLS: could not stop the AI Control listener: " + e);
+        }
+
+        try {
+            var err = ServerLibrary.INSTANCE.StopServer();
+            if (!err.isEmpty()) {
+                api.logging().logToError(err);
+            }
+        } catch (Throwable e) {
+            api.logging().logToError("Awesome TLS: could not stop the local server: " + e);
+        }
+    }
+
     private HttpRequest processHttpRequest(HttpRequestToBeSent request) {
         try {
             // The rewritten request below is itself sent by Burp, so it comes back through this
@@ -112,7 +131,11 @@ public class Extension implements BurpExtension {
             transportConfig.HeaderOrder = headerOrder;
 
             var goConfigJSON = gson.toJson(transportConfig);
-            var url = new URI("https://" + settings.getSpoofProxyAddress()).toURL();
+            // The address the Go server is really listening on, not the configured one. Changing
+            // the listen address does not move a running server, so using the configured value here
+            // would send every request to a port nothing is bound to until the extension is
+            // reloaded. See ADR-0001 section 12.
+            var url = new URI("https://" + settings.activeSpoofProxyAddress()).toURL();
             var httpService = HttpService.httpService(url.getHost(), url.getPort(), Objects.equals(url.getProtocol(), "https"));
 
             return request.withService(httpService).withAddedHeader(HEADER_KEY, goConfigJSON);
