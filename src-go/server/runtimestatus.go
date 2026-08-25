@@ -49,7 +49,30 @@ var (
 		Spoof:     ListenerStatus{State: StateStopped},
 		Intercept: ListenerStatus{State: StateStopped},
 	}
+
+	// spoofGeneration identifies the current StartServer call. Reloading the extension overlaps a
+	// server that is shutting down with one that is starting, and without this the goroutine
+	// unwinding from the old Serve writes STOPPED after the new one has already written RUNNING —
+	// leaving Java told there is no listener while a socket is very much bound.
+	spoofGeneration int
 )
+
+// beginSpoof claims the status slot for a new StartServer call.
+func beginSpoof() int {
+	statusMu.Lock()
+	defer statusMu.Unlock()
+	spoofGeneration++
+	status.Spoof = ListenerStatus{State: StateStarting}
+	return spoofGeneration
+}
+
+// currentSpoofGeneration is what StopServer reports against, so a stop can only ever describe the
+// server that is actually current.
+func currentSpoofGeneration() int {
+	statusMu.RLock()
+	defer statusMu.RUnlock()
+	return spoofGeneration
+}
 
 // RuntimeStatus returns a copy, so a caller can never observe a half-updated snapshot.
 func RuntimeStatus() RuntimeStatusSnapshot {
@@ -69,9 +92,14 @@ func RuntimeStatusJSON() string {
 	return string(encoded)
 }
 
-func setSpoofStatus(state, actualAddress, lastError string) {
+// setSpoofStatus records the state of one particular StartServer call, and does nothing if that
+// call is no longer the current one.
+func setSpoofStatus(generation int, state, actualAddress, lastError string) {
 	statusMu.Lock()
 	defer statusMu.Unlock()
+	if generation != spoofGeneration {
+		return
+	}
 	status.Spoof = ListenerStatus{State: state, ActualAddress: actualAddress, LastError: lastError}
 }
 

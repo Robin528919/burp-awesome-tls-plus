@@ -84,9 +84,16 @@ public final class Analysis {
 
         // Every proxy URL, global or per-rule: it decides where traffic goes and may carry
         // credentials in the same string.
+        //
+        // Only when a proxy is actually involved, though. Creating a rule materializes all six of
+        // its fields, so a proposal that sets nothing but a fingerprint still produces an "add" of
+        // an empty externalProxyUrl. Flagging that as high risk marks the proposal as needing a
+        // second confirmation for a change that touches no proxy at all — and a confirmation
+        // dialog that cries wolf is one that stops being read.
         var proxyPaths = diff.stream()
+                .filter(change -> change.path().endsWith("/externalProxyUrl"))
+                .filter(change -> !isBlank(change.before()) || !isBlank(change.after()))
                 .map(Wire.FieldChange::path)
-                .filter(p -> p.endsWith("/externalProxyUrl"))
                 .toList();
         if (!proxyPaths.isEmpty()) {
             flags.add(new Wire.RiskFlag("EXTERNAL_PROXY_CHANGED", "HIGH", proxyPaths,
@@ -132,6 +139,14 @@ public final class Analysis {
         }
 
         return flags.stream().sorted(Wire.RiskFlag.ORDER).toList();
+    }
+
+    /**
+     * @return whether a value is absent or an empty string, which for these settings both mean
+     * "nothing configured".
+     */
+    private static boolean isBlank(Object value) {
+        return value == null || (value instanceof String text && text.isBlank());
     }
 
     private static void addIfChanged(List<Wire.RiskFlag> into, List<Wire.FieldChange> diff,
@@ -332,6 +347,30 @@ public final class Analysis {
                 SettingsSnapshot.of(BusinessSettings.defaults(), nine));
         check(justUnder.stream().noneMatch(f -> f.code().equals("BULK_RULE_CHANGE")),
                 "one fewer is not");
+
+        // Creating a rule writes every field, most of them empty. Those are not changes to
+        // anything and must not drag the proposal into the high-risk path.
+        var newRule = risksBetween(SettingsSnapshot.of(BusinessSettings.defaults(), List.of()),
+                SettingsSnapshot.of(BusinessSettings.defaults(),
+                        List.of(new FingerprintRule("a.com", "chrome", "", "", null, true))));
+        check(newRule.stream().noneMatch(f -> f.code().equals("EXTERNAL_PROXY_CHANGED")),
+                "adding a rule with no proxy is not an external proxy change");
+        check(!highRisk(newRule), "and adding one plain rule is not high risk at all");
+
+        // Clearing a proxy that was set is still a proxy change.
+        var cleared = risksBetween(
+                SettingsSnapshot.of(BusinessSettings.defaults().withExternalProxyUrl("http://127.0.0.1:8080"),
+                        List.of()),
+                SettingsSnapshot.of(BusinessSettings.defaults(), List.of()));
+        check(cleared.stream().anyMatch(f -> f.code().equals("EXTERNAL_PROXY_CHANGED")),
+                "removing a proxy is still an external proxy change");
+
+        // And a rule that does set one still is.
+        var ruleProxy = risksBetween(SettingsSnapshot.of(BusinessSettings.defaults(), List.of()),
+                SettingsSnapshot.of(BusinessSettings.defaults(), List.of(
+                        new FingerprintRule("a.com", "", "", "socks5://127.0.0.1:1080", null, true))));
+        check(ruleProxy.stream().anyMatch(f -> f.code().equals("EXTERNAL_PROXY_CHANGED")),
+                "a rule that sets a proxy is an external proxy change");
 
         // A stored value that will never be used has to be said out loud.
         var suppressed = risksBetween(base, base.withSettings(BusinessSettings.defaults()

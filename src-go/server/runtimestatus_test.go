@@ -7,7 +7,7 @@ import (
 )
 
 func TestRuntimeStatusDefaultsToStopped(t *testing.T) {
-	setSpoofStatus(StateStopped, "", "")
+	setSpoofStatus(beginSpoof(), StateStopped, "", "")
 	setInterceptStatus(StateStopped, "", "")
 	setBurpUpstream("", "")
 
@@ -21,7 +21,7 @@ func TestRuntimeStatusDefaultsToStopped(t *testing.T) {
 }
 
 func TestRuntimeStatusReportsRealAddresses(t *testing.T) {
-	setSpoofStatus(StateRunning, "127.0.0.1:8887", "")
+	setSpoofStatus(beginSpoof(), StateRunning, "127.0.0.1:8887", "")
 	setInterceptStatus(StateFailed, "", "bind: address already in use")
 	setBurpUpstream("127.0.0.1:8080", "")
 
@@ -51,7 +51,7 @@ func TestRuntimeStatusIsRaceFree(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				setSpoofStatus(StateRunning, "127.0.0.1:8887", "")
+				setSpoofStatus(beginSpoof(), StateRunning, "127.0.0.1:8887", "")
 				setInterceptStatus(StateStarting, "", "")
 				setBurpUpstream("127.0.0.1:8080", "")
 			}
@@ -80,4 +80,29 @@ func TestProxyStateIsRaceFree(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// Reloading the extension overlaps a server that is shutting down with one that is starting. The
+// goroutine unwinding from the old Serve must not be able to report STOPPED over the new server's
+// RUNNING, or Java is told there is no listener while a socket is bound.
+func TestStoppingServerCannotClobberANewerOne(t *testing.T) {
+	old := beginSpoof()
+	setSpoofStatus(old, StateRunning, "127.0.0.1:8887", "")
+
+	// A reload: the new StartServer claims the slot and binds.
+	fresh := beginSpoof()
+	setSpoofStatus(fresh, StateRunning, "127.0.0.1:8887", "")
+
+	// Only now does the previous Serve call unwind and try to report that it stopped.
+	setSpoofStatus(old, StateStopped, "", "")
+
+	if got := RuntimeStatus().Spoof; got.State != StateRunning || got.ActualAddress != "127.0.0.1:8887" {
+		t.Fatalf("a stopping server overwrote the current one: %+v", got)
+	}
+
+	// The current one may still report its own stop.
+	setSpoofStatus(fresh, StateStopped, "", "")
+	if got := RuntimeStatus().Spoof; got.State != StateStopped {
+		t.Fatalf("the current server could not report its own stop: %+v", got)
+	}
 }

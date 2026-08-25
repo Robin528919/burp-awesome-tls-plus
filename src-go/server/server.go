@@ -125,18 +125,18 @@ func StartServer(addr string) error {
 		NextProtos: []string{"http/1.1"},
 	}
 
-	setSpoofStatus(StateStarting, "", "")
+	generation := beginSpoof()
 
 	listener, err := net.Listen("tcp", s.Addr)
 	if err != nil {
 		wrapped := fmt.Errorf("listen, err: %w", err)
-		setSpoofStatus(StateFailed, "", wrapped.Error())
+		setSpoofStatus(generation, StateFailed, "", wrapped.Error())
 		return wrapped
 	}
 
 	// The address the socket is actually bound to, which is what Java must be told. The requested
 	// address is not the same thing once a port of 0 or a changed setting is involved.
-	setSpoofStatus(StateRunning, listener.Addr().String(), "")
+	setSpoofStatus(generation, StateRunning, listener.Addr().String(), "")
 
 	tlsListener := utls.NewListener(listener, s.TLSConfig)
 
@@ -145,15 +145,15 @@ func StartServer(addr string) error {
 		// not a failure, and reporting it as FAILED would leave the UI claiming the server crashed
 		// every time the extension is unloaded.
 		if errors.Is(err, fhttp.ErrServerClosed) {
-			setSpoofStatus(StateStopped, "", "")
+			setSpoofStatus(generation, StateStopped, "", "")
 			return fmt.Errorf("Server stopped")
 		}
 		wrapped := fmt.Errorf("serve, err: %w", err)
-		setSpoofStatus(StateFailed, "", wrapped.Error())
+		setSpoofStatus(generation, StateFailed, "", wrapped.Error())
 		return wrapped
 	}
 
-	setSpoofStatus(StateStopped, "", "")
+	setSpoofStatus(generation, StateStopped, "", "")
 	return nil
 }
 
@@ -251,7 +251,7 @@ func stopProxyLocked() error {
 
 func StopServer() error {
 	err := s.Shutdown(context.Background())
-	setSpoofStatus(StateStopped, "", "")
+	setSpoofStatus(currentSpoofGeneration(), StateStopped, "", "")
 	return err
 }
 
