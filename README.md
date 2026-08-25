@@ -99,7 +99,33 @@ Enabling is per Burp session. The endpoint never comes back on its own after a r
 
 1. Open **Awesome TLS → AI Control**, pick a port (default `8885`), tick the acknowledgement and
    press **Enable**.
-2. Point your MCP client at `http://127.0.0.1:8885/mcp`.
+2. Register the endpoint with your client. The tab's **Connect a client** section copies the exact
+   command for you, with whatever port you chose:
+
+   ```sh
+   claude mcp add --transport http --scope user awesome-tls http://127.0.0.1:8885/mcp
+   ```
+
+   ```sh
+   codex mcp add awesome-tls --url http://127.0.0.1:8885/mcp
+   ```
+
+   For anything configured by hand, the same thing as JSON:
+
+   ```json
+   {
+     "mcpServers": {
+       "awesome-tls": {
+         "type": "http",
+         "url": "http://127.0.0.1:8885/mcp"
+       }
+     }
+   }
+   ```
+
+   Both commands register the server **globally**, for every project. Drop `--scope user` to keep it
+   to the current project instead. A globally registered client can reach this endpoint from any
+   session, whenever it is enabled in Burp.
 3. When a proposal arrives, the tab is marked with a dot. It never steals focus or opens a dialog on
    its own.
 4. Review the diff and press **Apply** or **Reject**. **Revert last AI apply** undoes the most recent

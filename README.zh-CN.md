@@ -88,7 +88,31 @@
 ### 使用方式
 
 1. 打开 **Awesome TLS → AI Control**，选择端口（默认 `8885`），勾选确认后点 **Enable**。
-2. 把 MCP 客户端指向 `http://127.0.0.1:8885/mcp`。
+2. 把端点注册进你的客户端。标签页里的 **Connect a client** 一栏会按你实际选的端口，直接复制好命令：
+
+   ```sh
+   claude mcp add --transport http --scope user awesome-tls http://127.0.0.1:8885/mcp
+   ```
+
+   ```sh
+   codex mcp add awesome-tls --url http://127.0.0.1:8885/mcp
+   ```
+
+   需要手工配置的客户端，用同样内容的 JSON：
+
+   ```json
+   {
+     "mcpServers": {
+       "awesome-tls": {
+         "type": "http",
+         "url": "http://127.0.0.1:8885/mcp"
+       }
+     }
+   }
+   ```
+
+   这两条命令都是**全局注册**，对所有项目生效。去掉 `--scope user` 则只对当前项目生效。
+   全局注册意味着：只要你在 Burp 里启用了这个端点，任何会话的客户端都能连上它。
 3. 有提议到达时，标签页上会出现一个圆点。它不会抢焦点，也不会自动弹窗。
 4. 看完 diff 后点 **Apply** 或 **Reject**。**Revert last AI apply** 可以撤销最近一次已应用的改动，
    直到有任何新的提交为止。

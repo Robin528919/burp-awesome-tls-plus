@@ -52,6 +52,9 @@ final class AiControlPanel {
     /** Longer than this and a value is shown truncated, with the whole thing one click away. */
     private static final int INLINE_VALUE_LIMIT = 120;
 
+    /** What the server is called in a client's configuration. */
+    private static final String SERVER_NAME = "awesome-tls";
+
     private final Settings settings;
     private final Runnable onProposalChanged;
 
@@ -65,6 +68,9 @@ final class AiControlPanel {
     private final JCheckBox checkBoxUnderstood =
             new JCheckBox("I understand and accept that any process on this machine can read these values");
     private final JCheckBox checkBoxFullAudit = new JCheckBox("Record everything to the audit trail");
+
+    private final JTextArea textConnect = SettingsTab.descriptionText(" ");
+    private final JLabel labelCopied = new JLabel(" ");
 
     private final DiffTableModel diffModel = new DiffTableModel();
     private final JTable tableDiff = new JTable(diffModel);
@@ -104,6 +110,9 @@ final class AiControlPanel {
         buttonApply.addActionListener(e -> apply());
         buttonReject.addActionListener(e -> reject());
         buttonRevert.addActionListener(e -> revert());
+        // The commands quote the port that is actually in the field, so editing it before
+        // enabling still produces a command that will work.
+        spinnerPort.addChangeListener(e -> showConnectSnippet(lastCopied));
         tableDiff.getSelectionModel().addListSelectionListener(e -> showSelectedValue());
         buttonCopyValue.addActionListener(e -> copySelectedValue());
         listAudit.addListSelectionListener(e -> showSelectedAuditEvent());
@@ -168,7 +177,95 @@ final class AiControlPanel {
                         + "access to the folder — other local users, backup software, and sync "
                         + "clients. There is no delete button here; manage the files yourself.")));
 
+        panel.add(leftAligned(buildConnectSection()));
         return panel;
+    }
+
+    /**
+     * Ready-made commands for pointing a client at this endpoint.
+     * <p>
+     * The endpoint is fixed and the port is configurable, so the thing a user needs is not the URL
+     * on its own but the exact command their client takes — which is easy to get subtly wrong, and
+     * whose failure mode is a client that silently never connects.
+     */
+    private JComponent buildConnectSection() {
+        var panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createTitledBorder("Connect a client"),
+                new EmptyBorder(4, 8, 8, 8)));
+
+        var buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        buttons.add(copyButton("Copy endpoint URL", Snippet.ENDPOINT));
+        buttons.add(copyButton("Claude Code", Snippet.CLAUDE_CODE));
+        buttons.add(copyButton("Codex", Snippet.CODEX));
+        buttons.add(copyButton("JSON config", Snippet.JSON));
+        buttons.add(labelCopied);
+        panel.add(leftAligned(buttons));
+
+        panel.add(leftAligned(textConnect));
+        panel.add(leftAligned(SettingsTab.descriptionText(
+                "The Claude Code and Codex commands register the server globally, for every "
+                        + "project. Drop \"--scope user\" to keep it to the current project instead. "
+                        + "A globally registered client can reach this endpoint from any session, "
+                        + "whenever it is enabled here.")));
+        return panel;
+    }
+
+    private enum Snippet {ENDPOINT, CLAUDE_CODE, CODEX, JSON}
+
+    private Snippet lastCopied = Snippet.ENDPOINT;
+
+    private JButton copyButton(String label, Snippet snippet) {
+        var button = new JButton(label);
+        button.addActionListener(e -> {
+            var text = snippetFor(snippet);
+            Toolkit.getDefaultToolkit().getSystemClipboard()
+                    .setContents(new StringSelection(text), null);
+            lastCopied = snippet;
+            showConnectSnippet(snippet);
+            labelCopied.setText("Copied");
+            var timer = new javax.swing.Timer(3000, event -> labelCopied.setText(" "));
+            timer.setRepeats(false);
+            timer.start();
+        });
+        return button;
+    }
+
+    private void showConnectSnippet(Snippet snippet) {
+        textConnect.setText(snippetFor(snippet));
+    }
+
+    /**
+     * @return the endpoint the client should be pointed at: the one actually bound when the
+     * listener is up, and otherwise the one the port field would produce.
+     */
+    private String currentEndpoint() {
+        var running = settings.mcpServer().endpoint();
+        if (running != null) {
+            return running;
+        }
+        return "http://" + McpServer.BIND_HOST + ":" + spinnerPort.getValue() + McpServer.PATH;
+    }
+
+    private String snippetFor(Snippet snippet) {
+        var endpoint = currentEndpoint();
+        return switch (snippet) {
+            case ENDPOINT -> endpoint;
+            case CLAUDE_CODE -> "claude mcp add --transport http --scope user "
+                    + SERVER_NAME + " " + endpoint;
+            case CODEX -> "codex mcp add " + SERVER_NAME + " --url " + endpoint;
+            // The shape most clients that are configured by hand expect. Keys vary between
+            // clients, so this is a starting point rather than a guarantee.
+            case JSON -> "{\n"
+                    + "  \"mcpServers\": {\n"
+                    + "    \"" + SERVER_NAME + "\": {\n"
+                    + "      \"type\": \"http\",\n"
+                    + "      \"url\": \"" + endpoint + "\"\n"
+                    + "    }\n"
+                    + "  }\n"
+                    + "}";
+        };
     }
 
     /**
@@ -367,6 +464,7 @@ final class AiControlPanel {
     void refresh() {
         SwingUtilities.invokeLater(() -> {
             syncControls();
+            showConnectSnippet(lastCopied);
             showProposal();
             showAudit();
             onProposalChanged.run();
