@@ -413,6 +413,7 @@ final class AiControlPanel {
             diffModel.set(List.of());
             textRisk.setText(" ");
             textValueDetail.setText(" ");
+            buttonCopyValue.setEnabled(false);
             return;
         }
 
@@ -440,6 +441,7 @@ final class AiControlPanel {
         diffModel.set(proposal.diff());
         textRisk.setText(riskText(proposal));
         textValueDetail.setText(" ");
+        buttonCopyValue.setEnabled(false);
     }
 
     private static String riskText(Proposal proposal) {
@@ -466,6 +468,9 @@ final class AiControlPanel {
 
     private void showSelectedValue() {
         var row = tableDiff.getSelectedRow();
+        // A control that does nothing when pressed is worse than one that is visibly unavailable,
+        // and every other button on this panel already disables itself.
+        buttonCopyValue.setEnabled(row >= 0);
         if (row < 0) {
             textValueDetail.setText(" ");
             return;
