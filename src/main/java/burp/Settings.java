@@ -78,10 +78,10 @@ public class Settings {
                 log);
 
         this.aiService = new AiSettingsService(control, audit, aiControl::fullAudit,
-                aiControl::enabled, Clock.systemUTC());
+                aiControl::enabled, aiControl::autoApply, Clock.systemUTC());
         control.addListener(aiService::onCommitted);
 
-        this.mcpServer = new McpServer(aiService, audit, aiControl::fullAudit, log,
+        this.mcpServer = new McpServer(aiService, audit, aiControl::fullAudit, aiControl::autoApply, log,
                 api.extension().filename() == null ? "unknown" : "1");
 
         // Recovery first, then the pre-rename adoption, then the old preference key. The order is

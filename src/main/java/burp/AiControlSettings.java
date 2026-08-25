@@ -26,6 +26,16 @@ final class AiControlSettings {
     /** Not stored anywhere: every Burp session starts with the endpoint closed. */
     private volatile boolean enabled;
 
+    /**
+     * Whether a proposal is applied the moment it arrives, with no review.
+     * <p>
+     * Deliberately not persisted, for the same reason as {@link #enabled}: it removes the only
+     * thing standing between an unauthenticated local endpoint and a silent settings change, so it
+     * has to be a decision the user makes again each session rather than one that quietly survives
+     * a restart.
+     */
+    private volatile boolean autoApply;
+
     AiControlSettings(Preferences storage) {
         this.storage = storage;
 
@@ -66,5 +76,18 @@ final class AiControlSettings {
 
     void setEnabled(boolean value) {
         this.enabled = value;
+        if (!value) {
+            // Turning the endpoint off also disarms auto-apply, so re-enabling never silently
+            // resumes applying changes without being asked for again.
+            this.autoApply = false;
+        }
+    }
+
+    boolean autoApply() {
+        return autoApply;
+    }
+
+    void setAutoApply(boolean value) {
+        this.autoApply = value;
     }
 }

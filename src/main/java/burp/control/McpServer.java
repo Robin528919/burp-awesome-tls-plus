@@ -77,6 +77,7 @@ public final class McpServer {
     private final AiSettingsService service;
     private final AuditTrail audit;
     private final java.util.function.BooleanSupplier auditEnabled;
+    private final java.util.function.BooleanSupplier autoApply;
     private final Ports.Log log;
     private final String extensionVersion;
 
@@ -89,11 +90,13 @@ public final class McpServer {
     private volatile java.time.Clock clock = java.time.Clock.systemUTC();
 
     public McpServer(AiSettingsService service, AuditTrail audit,
-                     java.util.function.BooleanSupplier auditEnabled, Ports.Log log,
+                     java.util.function.BooleanSupplier auditEnabled,
+                     java.util.function.BooleanSupplier autoApply, Ports.Log log,
                      String extensionVersion) {
         this.service = service;
         this.audit = audit;
         this.auditEnabled = auditEnabled;
+        this.autoApply = autoApply;
         this.log = log;
         this.extensionVersion = extensionVersion;
     }
@@ -489,8 +492,12 @@ public final class McpServer {
         meta.add("io.modelcontextprotocol/serverInfo", serverInfo);
         result.add("_meta", meta);
 
-        result.addProperty("instructions", "Inspect settings or submit a proposal. Applying, "
-                + "rejecting, and reverting are available only in the Burp AI Control tab.");
+        result.addProperty("instructions", autoApply.getAsBoolean()
+                ? "Inspect settings or submit a change. Auto-apply is armed in Burp, so a valid "
+                + "change is committed immediately. Reverting is available only in the Burp AI "
+                + "Control tab."
+                : "Inspect settings or submit a proposal. Applying, rejecting, and reverting are "
+                + "available only in the Burp AI Control tab.");
         result.addProperty("ttlMs", 0);
         result.addProperty("cacheScope", "private");
         return result;
@@ -506,9 +513,18 @@ public final class McpServer {
                         + "catalog, runtime/proposal state, and optional effective host configuration. "
                         + "Values are unredacted; it never performs DNS or target network traffic.",
                 "inspect-input.json", "inspect-output.json", true, true));
+        // The description has to track what the server will actually do, and that now depends on
+        // a switch in Burp. A tool that says it never applies settings while auto-apply is armed
+        // is worse than no description at all.
         tools.add(tool(TOOL_PROPOSE, "Propose Awesome TLS settings changes",
-                "Validates and records one settings proposal for review in Burp. It never applies "
-                        + "settings; approval, rejection, and revert remain local Burp UI actions.",
+                autoApply.getAsBoolean()
+                        ? "Validates one settings change. Auto-apply is currently armed in Burp, so "
+                        + "a valid change is committed immediately and the result reports status "
+                        + "APPLIED with the new revision. Turning auto-apply off in Burp returns "
+                        + "this tool to recording a proposal for review."
+                        : "Validates and records one settings proposal for review in Burp. It never "
+                        + "applies settings; approval, rejection, and revert remain local Burp UI "
+                        + "actions.",
                 "propose-input.json", "propose-output.json", false, true));
         result.add("tools", tools);
 

@@ -80,10 +80,13 @@ final class AiControlPanel {
     private final JLabel labelStatus = new JLabel();
     private final JLabel labelEndpoint = new JLabel();
     private final JLabel labelAuditState = new JLabel();
+    private final JLabel labelAutoApplyState = new JLabel();
     private final JTextArea textGoServer = SettingsTab.descriptionText(" ");
     private final JCheckBox checkBoxUnderstood =
             new JCheckBox("I understand and accept that any process on this machine can read these values");
     private final JCheckBox checkBoxFullAudit = new JCheckBox("Record everything to the audit trail");
+    private final JCheckBox checkBoxAutoApply =
+            new JCheckBox("Apply changes automatically, without review");
 
     /**
      * Everything that only matters while deciding whether to switch this on. It is hidden once the
@@ -151,6 +154,7 @@ final class AiControlPanel {
             settings.aiControl().setFullAudit(checkBoxFullAudit.isSelected());
             syncControls();
         });
+        checkBoxAutoApply.addActionListener(e -> armAutoApply());
         buttonApply.addActionListener(e -> apply());
         buttonReject.addActionListener(e -> reject());
         buttonRevert.addActionListener(e -> revert());
@@ -179,6 +183,7 @@ final class AiControlPanel {
         controls.add(buttonToggle);
         controls.add(labelStatus);
         controls.add(Box.createHorizontalStrut(16));
+        controls.add(checkBoxAutoApply);
         controls.add(checkBoxFullAudit);
         var openFolder = new JButton("Open audit folder");
         openFolder.addActionListener(e -> openAuditFolder());
@@ -200,9 +205,9 @@ final class AiControlPanel {
                         + "• Any process running as you on this machine can read your complete "
                         + "settings through it, including external proxy credentials and the full "
                         + "hex ClientHello.\n"
-                        + "• Any such process can submit a settings proposal.\n"
-                        + "• Nothing it submits is applied until you approve it here. Applying, "
-                        + "rejecting and reverting are only ever done in this tab.\n"
+                        + "• Any such process can submit a settings change.\n"
+                        + "• With \"Apply changes automatically\" off, nothing it submits takes "
+                        + "effect until you approve it here.\n"
                         + "• Binding to loopback is not authentication, and this warning is shown "
                         + "every time for that reason."));
         warning.row(Box.createVerticalStrut(6));
@@ -210,6 +215,8 @@ final class AiControlPanel {
         // used to appear only in the endpoint line, which reads "not listening" at exactly the
         // moment this is being decided.
         warning.row(labelAuditState);
+        warning.row(Box.createVerticalStrut(4));
+        warning.row(labelAutoApplyState);
         warning.row(Box.createVerticalStrut(6));
         warning.row(checkBoxUnderstood);
 
@@ -499,6 +506,38 @@ final class AiControlPanel {
         refresh();
     }
 
+    /**
+     * Arms or disarms applying without review.
+     * <p>
+     * Confirmed each time it is armed, and never persisted. It removes the only thing standing
+     * between an unauthenticated local endpoint and a silent settings change, so it should be a
+     * thing the user decided today, not a thing they decided once and forgot.
+     */
+    private void armAutoApply() {
+        if (!checkBoxAutoApply.isSelected()) {
+            settings.aiControl().setAutoApply(false);
+            refresh();
+            return;
+        }
+
+        var confirmed = JOptionPane.showConfirmDialog(root,
+                "Apply settings changes as soon as they arrive, without reviewing them?\n\n"
+                        + "This endpoint has no authentication. While this is armed, any process "
+                        + "running as you on this machine can change your settings — including the "
+                        + "upstream proxy your traffic goes through, and the address the listener "
+                        + "binds to — with no prompt.\n\n"
+                        + "Everything else still applies: changes are validated, recorded, and "
+                        + "\"Revert last AI apply\" still undoes the most recent one. It is only "
+                        + "the review step that is skipped.\n\n"
+                        + "This is not remembered; it turns itself off when the listener stops.",
+                "Arm automatic apply", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+
+        var armed = confirmed == JOptionPane.YES_OPTION;
+        settings.aiControl().setAutoApply(armed);
+        checkBoxAutoApply.setSelected(armed);
+        refresh();
+    }
+
     private void openAuditFolder() {
         var directory = settings.audit().directory();
         try {
@@ -637,7 +676,14 @@ final class AiControlPanel {
         labelEndpoint.setText(running
                 ? "Endpoint: " + settings.mcpServer().endpoint()
                         + "   —   full audit is " + (settings.aiControl().fullAudit() ? "ON" : "OFF")
+                        + (settings.aiControl().autoApply() ? "   —   AUTO-APPLY ARMED" : "")
                 : "Not listening. Enabling is per Burp session; it is never restored automatically.");
+        checkBoxAutoApply.setSelected(settings.aiControl().autoApply());
+        labelAutoApplyState.setText(settings.aiControl().autoApply()
+                ? "Automatic apply is ARMED. A valid change takes effect the moment it arrives, "
+                        + "with no review."
+                : "Automatic apply is off. A change waits here until you approve it.");
+
         labelAuditState.setText("Full audit is currently "
                 + (settings.aiControl().fullAudit() ? "ON" : "OFF")
                 + ". Everything above would " + (settings.aiControl().fullAudit() ? "" : "not ")

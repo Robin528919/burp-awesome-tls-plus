@@ -195,9 +195,17 @@ sees a whole configuration or the previous whole configuration, never a mixture.
 
 Things that will look like bugs and are not:
 
-- **There is no tool that applies a proposal.** `inspect` and `propose` are the only two, and
-  `propose` writes nothing. Approval, rejection and revert live in the Burp UI. Adding an
-  AI-callable apply is a new architecture decision, not a feature.
+- **There is no tool that applies a proposal.** `inspect` and `propose` are the only two.
+  Approval, rejection and revert live in the Burp UI. Adding an AI-callable apply is a new
+  architecture decision, not a feature.
+- **`propose` does write, when auto-apply is armed.** ADR section 22 (approved 2026-08-25) adds a
+  Burp-only switch that commits a valid proposal on arrival and returns `status: "APPLIED"`. It
+  removes the review step and nothing else: validation, journal, audit, three-way merge and the
+  undo all still run, and a dirty settings tab, a moved revision or an unreadable rules file still
+  block it. The switch is off by default, never persisted, confirmed each time it is armed, and
+  disarmed when the listener stops — a client cannot arm it, and it cannot survive a restart. The
+  `tools/list` description and `server/discover` instructions change with it, because a tool that
+  claims it never applies settings while auto-apply is armed is worse than no description.
 - **Exactly one phase is the commit decision.** `TransactionJournal.Phase.COMMIT_DECIDED`. Before
   it, any failure rolls back; at or after it, nothing rolls back, ever — a change the user approved
   and that was durably decided must not be undone because a phase marker or a UI refresh failed

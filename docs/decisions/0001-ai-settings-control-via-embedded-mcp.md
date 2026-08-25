@@ -1,6 +1,6 @@
 # ADR-0001：通过内嵌 MCP 实现 AI Settings Control
 
-- 状态：Accepted / Locked
+- 状态：Accepted / Locked（2026-08-25 经用户明确批准修订一次，见 §22）
 - 实现状态：Implemented（2026-08-25）。除第 17.3 节要求的 Codex Desktop / Codex CLI 真实 Burp E2E 外，本文锁定的行为均已实现并有可复核的自动检查；详见 §21 实现记录
 - 日期：2026-08-25
 - 范围：Burp 扩展内的设置查看、AI 修改提议、Burp 本地审批及其运行保障
@@ -30,7 +30,9 @@
 首版不提供：
 
 - AI 可调用的 apply、commit、approve、reject 或 revert tool；
+  **（2026-08-25 修订：见 §22。仍不提供 AI 可调用的 apply/approve/reject/revert tool；但新增用户在 Burp 中手动开启的 auto-apply 开关，开启期间 propose 通过校验后立即提交。）**
 - 无人值守、可信客户端或自动批准模式；
+  **（2026-08-25 修订：见 §22。auto-apply 是会话级、默认关闭、需二次确认的自动批准模式。）**
 - 远程监听、`0.0.0.0`、浏览器 CORS 接入或通用远程控制平面；
 - Token、OAuth 或可选认证模式；
 - 任意 Preferences key、文件路径、命令、JSON Patch 路径或原始 `TransportConfig` 写入；
@@ -1212,3 +1214,40 @@ Burp 自带运行时为 **JRE 24.0.1，且 `java --list-modules` 中没有 `jdk.
 - §17.2 的 Swing 集成项为人工检查项，尚未在真实 Burp 界面中逐项走查。
 - v1 未签发 cursor，因此 `ChunkReference` / `InspectChunk` 路径已在 schema 与错误码中就位，但未产生真实分块输出；带 cursor 的 inspect 一律返回 `CURSOR_INVALID`。
 - `Mcp-Name` 的 `=?base64?...?=` sentinel 解码按本文字面实现，并兼容 RFC 2047 的 `=?utf-8?B?...?=` 拼写；E2E 时须对照官方规范确认。
+
+## 22. 修订记录 R1：会话级 auto-apply（2026-08-25，用户明确批准）
+
+### 22.1 变更内容
+
+新增一个 Burp UI 开关「Apply changes automatically, without review」。开启期间，`propose` 在通过全部校验后**立即提交**，不再进入待审队列，返回新的 `status: "APPLIED"` 结果（含 `revision`、`appliedAt` 和实际提交的 diff/risk/impact）。
+
+### 22.2 未变更的部分
+
+这次修订移除的**只有人工闸门**，其余全部保留：
+
+- 仍然**没有** AI 可调用的 apply/approve/reject/revert tool。tool 集合仍是 `inspect` 和 `propose` 两个，开关只能由用户在 Burp 中拨动；
+- 校验、canonical revision、fingerprint/Hex acknowledgement、hidden-rule 冲突检查全部不变；
+- 事务日志、补偿、启动恢复、唯一 commit decision 不变；
+- 完整审计 ON 时仍然 fail closed：写不进审计的变更不会发生；
+- `rules.json` 三方合并不变。auto-apply 下若干净合并改变了结果，直接提交合并结果并在 `APPLIED` 的 diff 中如实返回（无人可复审，返回旧 diff 会是谎报）；
+- dirty UI、revision 冲突、rule-file invalid 仍然阻断；
+- `Revert last AI apply` 不变。
+
+### 22.3 开关的约束
+
+- **默认关闭**，且**不持久化**；
+- 勾选时弹出二次确认，说明「本机任何进程可无提示改变设置，包括上游代理和监听地址」；
+- 关闭 AI Control 监听器时自动解除，重新启用不会恢复；
+- 与 §3 中其他 control-plane 设置一致：不进入业务 revision，不使待审 proposal 失效。
+
+### 22.4 为什么接受这个风险
+
+端点无认证，因此 auto-apply armed 期间，本机任意进程都能无提示改写设置。用户在了解该后果后明确选择了这一模式，理由是指纹调试属于「propose → 应用 → 验证 → 再来一轮」的紧密循环，每轮一次点击加 15 分钟 TTL 的成本过高。
+
+会话级、默认关闭、需二次确认，是在满足该需求的前提下能保留的最强约束：它把「无认证端点可静默改设置」限定为用户当天主动武装过的状态，而不是一个装完就永久生效的属性。
+
+### 22.5 合同影响
+
+- `propose` 的 `outputSchema` 增加 `APPLIED` 变体（`src/main/resources/mcp/propose-output.json`）；
+- `tools/list` 中 `propose` 的 description 与 `server/discover` 的 `instructions` 随开关变化，如实描述当前行为——armed 时仍宣称「never applies settings」比没有描述更糟；
+- §19 完成定义中的「Burp UI 是唯一 approval/reject/revert 权限边界」按本节修订理解：**权限边界仍在 Burp UI**（只有用户能拨动开关），但 armed 期间不再逐次审批。

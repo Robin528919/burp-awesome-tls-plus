@@ -390,6 +390,72 @@
         "kind",
         "schemaVersion",
         "status",
+        "proposalId",
+        "baseRevision",
+        "revision",
+        "appliedAt",
+        "summary",
+        "diff",
+        "riskFlags",
+        "runtimeImpact"
+      ],
+      "properties": {
+        "kind": {
+          "const": "proposal_result"
+        },
+        "schemaVersion": {
+          "const": "awesome_tls.settings.v1"
+        },
+        "status": {
+          "const": "APPLIED"
+        },
+        "proposalId": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "baseRevision": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "appliedAt": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "diff": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fieldChange"
+          }
+        },
+        "riskFlags": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/riskFlag"
+          }
+        },
+        "runtimeImpact": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/runtimeImpact"
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schemaVersion",
+        "status",
         "revision",
         "diff",
         "riskFlags",

@@ -12,9 +12,12 @@ The normative design and acceptance contract is [ADR-0001: AI Settings Control v
 
 It is implemented. The embedded HTTP engine is Jetty 12 core, chosen by the section 16.5 spike: Burp's bundled runtime is a JRE 24 **without `jdk.httpserver`**, so `com.sun.net.httpserver` is unavailable, and Jetty core needs no servlet container. Outstanding before release: the section 17.3 end-to-end run with Codex Desktop and Codex CLI inside a real Burp, which cannot be automated here.
 
+The ADR has been amended once, with explicit approval, to add the auto-apply switch; see its section 22. Do not treat "the AI can never change settings" as still true without qualification, and do not remove the switch's constraints — off by default, session-only, confirmed on arming — as tidying.
+
 The non-negotiable core is:
 
-- Embed a local MCP adapter in the Burp extension. Expose only `awesome_tls.settings.inspect` and `awesome_tls.settings.propose`; applying, rejecting, and reverting remain local Burp UI actions. Never add an AI-callable apply/commit path, direct Preferences/file writes, or raw `TransportConfig` mutation.
+- Embed a local MCP adapter in the Burp extension. Expose only `awesome_tls.settings.inspect` and `awesome_tls.settings.propose`. Never add an AI-callable apply/commit path, direct Preferences/file writes, or raw `TransportConfig` mutation.
+- **Auto-apply (ADR §22, approved 2026-08-25).** A Burp-only switch makes a valid `propose` commit immediately, returning `status: "APPLIED"`. It removes the review step and nothing else — every validation, the journal, the audit trail, the three-way merge and the undo all still run. The switch is off by default, never persisted, confirmed each time it is armed, and disarmed when the listener stops. There is still no AI-callable way to apply, approve, reject or revert, and no way for a client to arm it.
 - Put Swing and MCP behind one `SettingsControl` seam with shared validation, canonical revisioning, diffing, persistence, runtime-impact classification, and an immutable snapshot plus matching `RuleMatcher` published atomically.
 - Preserve the scalar-Preferences/domain-`rules.json` storage split, but add staged persistence, compensation, and startup recovery. Never publish a partially persisted runtime snapshot or silently use last-write-wins.
 - Treat configured and active listener state separately. In particular, request rewriting must continue to use the Go listener's actual active address until the extension is reloaded.

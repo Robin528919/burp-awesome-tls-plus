@@ -39,7 +39,8 @@ public class NoNetworkProbe {
                 new FingerprintRule("api.example.com", "chrome", "", "http://proxy.example.net:8080", 60, true),
                 new FingerprintRule("*.cdn.example.org", "chrome", "", "", null, true))),
                 TransactionJournal.Source.UI_SAVE);
-        var service = new AiSettingsService(control, audit, () -> false, () -> true, Clock.systemUTC());
+        var service = new AiSettingsService(control, audit, () -> false, () -> true, () -> false,
+                Clock.systemUTC());
 
         // Baseline after setup, so only the calls under test are counted.
         var forwardBefore = CountingResolverProvider.FORWARD.get();

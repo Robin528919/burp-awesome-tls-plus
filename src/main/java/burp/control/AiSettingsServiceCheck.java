@@ -51,6 +51,8 @@ public final class AiSettingsServiceCheck {
         revertIsLimitedToTheLastAiChange();
         auditFailureFailsClosed();
         controlDisabledRefusesEverything();
+        autoApplyCommitsWithoutReview();
+        autoApplyKeepsEveryCheckExceptTheGate();
 
         System.out.println("AiSettingsService self-check passed");
     }
@@ -534,6 +536,89 @@ public final class AiSettingsServiceCheck {
                         == Wire.Code.CONTROL_DISABLED, "and so is propose");
     }
 
+    /**
+     * With auto-apply armed the proposal is committed on arrival. The gate is what is removed; the
+     * pipeline behind it is unchanged, so the change is still validated, journalled, published
+     * atomically and undoable.
+     */
+    private static void autoApplyCommitsWithoutReview() throws Exception {
+        var f = Fixture.create();
+        f.autoApply.set(true);
+        var before = f.control.snapshot().revision();
+
+        var result = f.propose("auto-1", "{\"settings\":{\"httpTimeout\":45}}");
+        check(result.get("status").getAsString().equals("APPLIED"), "the proposal is applied on arrival");
+        check(!f.control.snapshot().revision().equals(before), "the committed revision moves");
+        check(f.control.snapshot().settings().httpTimeout() == 45, "and the change is live");
+        check(f.preferences.read().httpTimeout() == 45, "and stored");
+        check(f.service.pending() == null, "nothing is left waiting for review");
+
+        check(result.get("revision").getAsString().equals(f.control.snapshot().revision()),
+                "the caller is told the new revision, so it can chain the next change");
+        check(result.get("baseRevision").getAsString().equals(before), "and what it came from");
+        check(result.getAsJsonArray("diff").size() == 1, "with the diff that was committed");
+        check(result.has("appliedAt"), "and when");
+
+        // The undo still exists; removing the gate must not remove the way back.
+        check(f.service.canRevert(), "the change can still be reverted");
+        check(f.service.revert() instanceof AiSettingsService.ApprovalOutcome.Applied,
+                "and reverting works");
+        check(f.control.snapshot().revision().equals(before), "returning to where it started");
+
+        // Switching the endpoint off disarms it, so re-enabling never silently resumes applying.
+        var g = Fixture.create();
+        g.autoApply.set(true);
+        g.enabled.set(false);
+        check(codeOf(g.service.inspect(null, null)) == Wire.Code.CONTROL_DISABLED,
+                "a disabled endpoint still refuses everything");
+    }
+
+    /**
+     * Everything that would have stopped an Apply click still stops an automatic one.
+     */
+    private static void autoApplyKeepsEveryCheckExceptTheGate() throws Exception {
+        var f = Fixture.create();
+        f.autoApply.set(true);
+
+        // An invalid patch is refused before anything is committed.
+        var before = f.control.snapshot().revision();
+        rejects(f, "{\"settings\":{\"httpTimeout\":0}}", Wire.Code.VALIDATION_FAILED,
+                "an out-of-range timeout, with auto-apply on");
+        check(f.control.snapshot().revision().equals(before), "and nothing was committed");
+
+        // A draft in the settings tab still wins.
+        f.dirty.set(true);
+        var blocked = f.propose("auto-dirty", "{\"settings\":{\"httpTimeout\":45}}");
+        check(codeOf(blocked) == Wire.Code.DIRTY_UI, "an unsaved edit still blocks an automatic apply");
+        check(f.control.snapshot().revision().equals(before), "and nothing was committed");
+        f.dirty.set(false);
+
+        // A stale revision still blocks.
+        var stale = f.service.propose("sha256:" + "0".repeat(64), "auto-stale",
+                patch("{\"settings\":{\"httpTimeout\":45}}"), List.of(), "", new JsonObject());
+        check(codeOf(stale) == Wire.Code.REVISION_CONFLICT, "a stale revision still blocks");
+
+        // An unreadable rules file still blocks, and is still left alone.
+        f.seedRule("a.com");
+        Files.writeString(f.rulesPath, "{ not json");
+        var untouched = Files.readAllBytes(f.rulesPath);
+        var broken = f.propose("auto-broken", "{\"settings\":{\"httpTimeout\":46}}");
+        check(codeOf(broken) == Wire.Code.RULE_FILE_INVALID, "a broken rules file still blocks");
+        check(java.util.Arrays.equals(untouched, Files.readAllBytes(f.rulesPath)),
+                "and is still not touched");
+
+        // Full audit is still fail-closed: an unrecordable change is not made.
+        var g = Fixture.create();
+        g.autoApply.set(true);
+        g.auditOn.set(true);
+        Files.deleteIfExists(g.auditDir);
+        Files.writeString(g.auditDir, "not a directory");
+        var unlogged = g.propose("auto-audit", "{\"settings\":{\"httpTimeout\":45}}");
+        check(codeOf(unlogged) == Wire.Code.AUDIT_UNAVAILABLE,
+                "an unrecordable change is still refused");
+        check(g.control.snapshot().settings().httpTimeout() != 45, "and is not applied");
+    }
+
     // ------------------------------------------------------------------ fixture
 
     private static final class Fixture {
@@ -543,6 +628,7 @@ public final class AiSettingsServiceCheck {
         final MutableClock clock = new MutableClock(Instant.parse("2026-08-25T12:00:00Z"));
         final AtomicBoolean auditOn = new AtomicBoolean(false);
         final AtomicBoolean enabled = new AtomicBoolean(true);
+        final AtomicBoolean autoApply = new AtomicBoolean(false);
         final AtomicBoolean dirty = new AtomicBoolean(false);
         final Prefs preferences = new Prefs();
         final TransactionJournal journal;
@@ -579,7 +665,8 @@ public final class AiSettingsServiceCheck {
                     () -> Set.of("chrome", "firefox", "safari", "opera", "default"),
                     () -> dirty.get() ? List.of("UNSAVED_UI_DRAFT") : List.of(),
                     Ports.Log.SILENT);
-            this.service = new AiSettingsService(control, audit, auditOn::get, enabled::get, clock);
+            this.service = new AiSettingsService(control, audit, auditOn::get, enabled::get,
+                    autoApply::get, clock);
             control.addListener(service::onCommitted);
         }
 

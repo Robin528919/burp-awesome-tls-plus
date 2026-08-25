@@ -76,8 +76,13 @@ them. It exposes exactly two tools:
 | `awesome_tls.settings.inspect` | Returns the committed settings, the active domain rules, the fingerprint catalog, what each listener is really doing, and optionally the exact transport configuration a request to a given host would use. Read-only, and it never resolves DNS or sends anything to a target. |
 | `awesome_tls.settings.propose` | Validates a change and records it for review. It does not apply anything. |
 
-**Applying, rejecting and reverting are only ever done by you, in Burp.** There is no tool that
-applies a proposal, and the endpoint has no path to one. A proposal shows you the complete
+**Applying, rejecting and reverting are Burp UI actions.** There is no tool that applies a
+proposal. By default a proposal waits for you; there is also an **auto-apply** switch in the tab
+(off by default, never remembered, confirmed each time you arm it) that commits a valid change the
+moment it arrives — useful when you are iterating on a fingerprint and a click per round is the
+slow part. Arming it means any local process can change your settings with no prompt, which is
+what the confirmation says. Everything else still runs either way: validation, the audit trail, and
+**Revert last AI apply**. A proposal shows you the complete
 field-by-field diff, what each change affects and when it takes effect, and a second confirmation
 prompt for the changes that can take an installation offline — a listener address, an upstream
 proxy, the global fingerprint, or deleting rules.

@@ -34,6 +34,18 @@ public final class AiSettingsService {
     private final AuditTrail audit;
     private final java.util.function.BooleanSupplier auditEnabled;
     private final java.util.function.BooleanSupplier controlEnabled;
+
+    /**
+     * Whether a proposal is applied as soon as it is valid, with no review.
+     * <p>
+     * This removes the human gate and nothing else: the change still goes through the same
+     * validation, the same journal, the same audit trail, the same three-way merge against the
+     * rules file, and the same atomic publication. What it does mean is that an unauthenticated
+     * local endpoint can change settings without being asked, which is why the switch is
+     * session-scoped, off by default, and disarmed whenever the listener stops.
+     */
+    private final java.util.function.BooleanSupplier autoApply;
+
     private final Clock clock;
 
     private final AtomicReference<Proposal> pending = new AtomicReference<>();
@@ -61,11 +73,13 @@ public final class AiSettingsService {
 
     public AiSettingsService(SettingsControl control, AuditTrail audit,
                              java.util.function.BooleanSupplier auditEnabled,
-                             java.util.function.BooleanSupplier controlEnabled, Clock clock) {
+                             java.util.function.BooleanSupplier controlEnabled,
+                             java.util.function.BooleanSupplier autoApply, Clock clock) {
         this.control = control;
         this.audit = audit;
         this.auditEnabled = auditEnabled;
         this.controlEnabled = controlEnabled;
+        this.autoApply = autoApply;
         this.clock = clock;
     }
 
@@ -277,13 +291,55 @@ public final class AiSettingsService {
             return recorded;
         }
 
-        synchronized (lock) {
-            if (built.proposal() != null) {
-                pending.set(built.proposal());
+        var result = built.result();
+        if (built.proposal() != null) {
+            synchronized (lock) {
+                if (autoApply.getAsBoolean()) {
+                    // The gate is removed, not the pipeline: this is the same commit an Apply
+                    // click performs, and it produces the same audit trail and the same undo.
+                    result = applyImmediately(built.proposal());
+                } else {
+                    pending.set(built.proposal());
+                }
             }
-            replays.put(requestId, new Replay(argumentsDigest, built.result()));
         }
-        return built.result();
+
+        synchronized (lock) {
+            replays.put(requestId, new Replay(argumentsDigest, result));
+        }
+        return result;
+    }
+
+    /**
+     * Commits a freshly built proposal without review.
+     *
+     * @return the {@code APPLIED} result, or the business error explaining why it was not applied.
+     */
+    private JsonObject applyImmediately(Proposal proposal) {
+        var outcome = applyNow(proposal);
+        if (outcome instanceof ApprovalOutcome.Applied applied) {
+            var before = proposal.base();
+            var diff = Analysis.diff(before, applied.snapshot());
+            var json = new JsonObject();
+            json.addProperty("kind", "proposal_result");
+            json.addProperty("schemaVersion", Wire.SCHEMA_VERSION);
+            json.addProperty("status", "APPLIED");
+            json.addProperty("proposalId", proposal.id());
+            json.addProperty("baseRevision", proposal.baseRevision());
+            json.addProperty("revision", applied.snapshot().revision());
+            json.addProperty("appliedAt", now().toString());
+            json.addProperty("summary", proposal.summary());
+            // The diff that was actually committed, which is not always the one proposed: an
+            // external edit to the rules file can merge cleanly and change the outcome.
+            json.add("diff", Wire.changes(diff));
+            json.add("riskFlags", Wire.risks(Analysis.risks(before, applied.snapshot(), diff)));
+            json.add("runtimeImpact", Wire.impacts(
+                    Analysis.impact(diff, control.runtimeStatus())));
+            return json;
+        }
+        var refused = (ApprovalOutcome.Refused) outcome;
+        return Wire.error(refused.code(), refused.message(), refused.details(),
+                control.snapshot().revision());
     }
 
     /**
@@ -463,78 +519,98 @@ public final class AiSettingsService {
                 return refuse(Wire.Code.REVISION_CONFLICT,
                         "The proposal changed since it was displayed; review it again.", "/proposalDigest");
             }
-
-            var dirty = control.dirtyReasons();
-            if (!dirty.isEmpty()) {
-                return new ApprovalOutcome.Refused(Wire.Code.DIRTY_UI,
-                        "The settings tab has unsaved edits; save or discard them first.",
-                        dirty.stream().map(r -> Wire.ErrorDetail.of("/ui", r)).toList());
-            }
-
-            var current = control.snapshot();
-            if (!current.revision().equals(proposal.baseRevision())) {
-                proposal.conflict(Wire.Code.REVISION_CONFLICT,
-                        List.of(Wire.ErrorDetail.mismatch("/baseRevision", "settings_changed_since_proposal",
-                                proposal.baseRevision(), current.revision())), now());
-                return refuse(Wire.Code.REVISION_CONFLICT,
-                        "The settings changed after this proposal was created.", "/baseRevision");
-            }
-
-            var probe = probeRules();
-            if (probe instanceof RuleStore.Probe.Invalid invalid) {
-                proposal.conflict(Wire.Code.EXTERNAL_DIVERGENCE,
-                        List.of(Wire.ErrorDetail.of("/domainRules", "rule_file_invalid")), now());
-                return refuse(Wire.Code.RULE_FILE_INVALID,
-                        "The rules file " + invalid.reason() + ". It has been left untouched.",
-                        "/domainRules");
-            }
-
-            var onDisk = probe instanceof RuleStore.Probe.Loaded loaded
-                    ? SettingsSnapshot.of(current.settings(), loaded.rules())
-                    : SettingsSnapshot.of(current.settings(), List.of());
-            var observedDigest = probe instanceof RuleStore.Probe.Loaded loaded ? loaded.rawDigest() : null;
-
-            var candidate = proposal.candidate();
-            if (!onDisk.revision().equals(current.revision())) {
-                // Someone edited the file. Merge per field rather than choosing a side.
-                var merge = ThreeWayMerge.merge(proposal.base(), onDisk, candidate);
-                if (merge instanceof ThreeWayMerge.Result.Divergence divergence) {
-                    proposal.conflict(Wire.Code.EXTERNAL_DIVERGENCE, divergence.details(), now());
-                    return new ApprovalOutcome.Refused(Wire.Code.EXTERNAL_DIVERGENCE,
-                            "The rules file was edited outside Burp in a way that cannot be merged.",
-                            divergence.details());
-                }
-                if (merge instanceof ThreeWayMerge.Result.Conflict conflict) {
-                    proposal.conflict(Wire.Code.MERGE_CONFLICT, conflict.details(), now());
-                    return new ApprovalOutcome.Refused(Wire.Code.MERGE_CONFLICT,
-                            "The proposal and the rules file changed the same field.", conflict.details());
-                }
-
-                var merged = (ThreeWayMerge.Result.Merged) merge;
-                candidate = SettingsSnapshot.of(candidate.settings(), merged.rules());
-                if (merged.changedFromProposed()) {
-                    // What the user confirmed is not what would now be applied.
-                    var diff = Analysis.diff(current, candidate);
-                    var regenerated = proposal.reviewed(candidate, diff,
-                            Analysis.risks(current, candidate, diff),
-                            Analysis.impact(diff, control.runtimeStatus()), observedDigest);
-                    pending.set(regenerated);
-                    return new ApprovalOutcome.NeedsReview(regenerated);
-                }
-            }
-
-            var outcome = control.commit(candidate, TransactionJournal.Source.AI_APPLY);
-            if (outcome instanceof SettingsControl.Outcome.Committed committed) {
-                pending.set(null);
-                revertible.set(new Revertible(current, committed.snapshot().revision()));
-                return new ApprovalOutcome.Applied(committed.snapshot());
-            }
-            if (outcome instanceof SettingsControl.Outcome.RecoveryRequired recovery) {
-                return new ApprovalOutcome.Refused(Wire.Code.RECOVERY_REQUIRED, recovery.message(), List.of());
-            }
-            var failed = (SettingsControl.Outcome.Failed) outcome;
-            return new ApprovalOutcome.Refused(failed.code(), failed.message(), failed.details());
+            return commitProposal(proposal, true);
         }
+    }
+
+    /**
+     * Applies a proposal that has just been built, with no review.
+     * <p>
+     * Reached only when auto-apply is armed. It is the same commit an Apply click performs — the
+     * gate is what was removed, not any of the checking — so a dirty settings tab, a revision that
+     * moved, an unreadable rules file or a genuine merge conflict all still stop it.
+     */
+    private ApprovalOutcome applyNow(Proposal proposal) {
+        return commitProposal(proposal, false);
+    }
+
+    /**
+     * @param reviewable whether a clean merge that changes the outcome should go back for another
+     *                   look. It should when a person is watching, because what they confirmed is
+     *                   no longer what would happen. With auto-apply there is nobody to ask, so the
+     *                   merged result is committed and the caller is told what actually landed.
+     */
+    private ApprovalOutcome commitProposal(Proposal proposal, boolean reviewable) {
+        var dirty = control.dirtyReasons();
+        if (!dirty.isEmpty()) {
+            return new ApprovalOutcome.Refused(Wire.Code.DIRTY_UI,
+                    "The settings tab has unsaved edits; save or discard them first.",
+                    dirty.stream().map(r -> Wire.ErrorDetail.of("/ui", r)).toList());
+        }
+
+        var current = control.snapshot();
+        if (!current.revision().equals(proposal.baseRevision())) {
+            proposal.conflict(Wire.Code.REVISION_CONFLICT,
+                    List.of(Wire.ErrorDetail.mismatch("/baseRevision", "settings_changed_since_proposal",
+                            proposal.baseRevision(), current.revision())), now());
+            return refuse(Wire.Code.REVISION_CONFLICT,
+                    "The settings changed after this proposal was created.", "/baseRevision");
+        }
+
+        var probe = probeRules();
+        if (probe instanceof RuleStore.Probe.Invalid invalid) {
+            proposal.conflict(Wire.Code.EXTERNAL_DIVERGENCE,
+                    List.of(Wire.ErrorDetail.of("/domainRules", "rule_file_invalid")), now());
+            return refuse(Wire.Code.RULE_FILE_INVALID,
+                    "The rules file " + invalid.reason() + ". It has been left untouched.",
+                    "/domainRules");
+        }
+
+        var onDisk = probe instanceof RuleStore.Probe.Loaded loaded
+                ? SettingsSnapshot.of(current.settings(), loaded.rules())
+                : SettingsSnapshot.of(current.settings(), List.of());
+        var observedDigest = probe instanceof RuleStore.Probe.Loaded loaded ? loaded.rawDigest() : null;
+
+        var candidate = proposal.candidate();
+        if (!onDisk.revision().equals(current.revision())) {
+            // Someone edited the file. Merge per field rather than choosing a side.
+            var merge = ThreeWayMerge.merge(proposal.base(), onDisk, candidate);
+            if (merge instanceof ThreeWayMerge.Result.Divergence divergence) {
+                proposal.conflict(Wire.Code.EXTERNAL_DIVERGENCE, divergence.details(), now());
+                return new ApprovalOutcome.Refused(Wire.Code.EXTERNAL_DIVERGENCE,
+                        "The rules file was edited outside Burp in a way that cannot be merged.",
+                        divergence.details());
+            }
+            if (merge instanceof ThreeWayMerge.Result.Conflict conflict) {
+                proposal.conflict(Wire.Code.MERGE_CONFLICT, conflict.details(), now());
+                return new ApprovalOutcome.Refused(Wire.Code.MERGE_CONFLICT,
+                        "The proposal and the rules file changed the same field.", conflict.details());
+            }
+
+            var merged = (ThreeWayMerge.Result.Merged) merge;
+            candidate = SettingsSnapshot.of(candidate.settings(), merged.rules());
+            if (merged.changedFromProposed() && reviewable) {
+                // What the user confirmed is not what would now be applied.
+                var diff = Analysis.diff(current, candidate);
+                var regenerated = proposal.reviewed(candidate, diff,
+                        Analysis.risks(current, candidate, diff),
+                        Analysis.impact(diff, control.runtimeStatus()), observedDigest);
+                pending.set(regenerated);
+                return new ApprovalOutcome.NeedsReview(regenerated);
+            }
+        }
+
+        var outcome = control.commit(candidate, TransactionJournal.Source.AI_APPLY);
+        if (outcome instanceof SettingsControl.Outcome.Committed committed) {
+            pending.set(null);
+            revertible.set(new Revertible(current, committed.snapshot().revision()));
+            return new ApprovalOutcome.Applied(committed.snapshot());
+        }
+        if (outcome instanceof SettingsControl.Outcome.RecoveryRequired recovery) {
+            return new ApprovalOutcome.Refused(Wire.Code.RECOVERY_REQUIRED, recovery.message(), List.of());
+        }
+        var failed = (SettingsControl.Outcome.Failed) outcome;
+        return new ApprovalOutcome.Refused(failed.code(), failed.message(), failed.details());
     }
 
     private static ApprovalOutcome refuse(Wire.Code code, String message, String path) {

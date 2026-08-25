@@ -614,8 +614,8 @@ public final class McpServerCheck {
                     () -> Set.of("chrome", "firefox", "default"), Ports.UiDirtyPort.SETTLED,
                     Ports.Log.SILENT);
             this.service = new AiSettingsService(control, audit, auditOn::get, () -> true,
-                    Clock.systemUTC());
-            this.server = new McpServer(service, audit, auditOn::get, Ports.Log.SILENT, "test");
+                    () -> false, Clock.systemUTC());
+            this.server = new McpServer(service, audit, auditOn::get, () -> false, Ports.Log.SILENT, "test");
         }
 
         static Fixture create() throws IOException {
