@@ -64,11 +64,25 @@ public class Extension implements BurpExtension {
             // Reaching here means the server stopped, or never managed to start.
             if (!err.isEmpty()) {
                 api.logging().logToError(err);
-                settingsTab.setServerStatus("Stopped — " + err, true);
 
-                var isGraceful = err.contains("Server stopped") || err.contains("address already in use");
-                if (!isGraceful) {
-                    api.extension().unload(); // fatal error; disable the extension
+                if (err.contains("address already in use")) {
+                    // Almost always a previous load of this extension. A native library cannot be
+                    // unloaded, so reloading leaves the old Go runtime running; if it still holds
+                    // the port, this instance never binds and traffic keeps working — served by the
+                    // previous build. Saying only "address already in use" leaves the user to
+                    // conclude their change took effect when it did not.
+                    var message = "Not serving — " + listenAddress + " is already in use, most "
+                            + "likely by a previous load of this extension. Traffic is still being "
+                            + "handled by that older instance, so changes to the native library "
+                            + "have NOT taken effect. Restart Burp to clear it.";
+                    api.logging().logToError("Awesome TLS: " + message);
+                    settingsTab.setServerStatus(message, true);
+                } else {
+                    settingsTab.setServerStatus("Stopped — " + err, true);
+
+                    if (!err.contains("Server stopped")) {
+                        api.extension().unload(); // fatal error; disable the extension
+                    }
                 }
             } else {
                 settingsTab.setServerStatus("Stopped", true);
