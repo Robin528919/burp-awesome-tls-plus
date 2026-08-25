@@ -1,11 +1,14 @@
 package burp;
 
+import burp.control.HostKey;
+
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Resolves a hostname to the most specific matching {@link FingerprintRule}.
@@ -16,12 +19,18 @@ import java.util.Map;
  * <p>
  * Precedence: an exact hostname always beats a wildcard; among wildcards the longest
  * (most specific) suffix wins, independent of the order rules appear in the UI.
+ * <p>
+ * Host patterns go through {@link HostKey}, the same normalizer the settings UI, the revision and
+ * AI patches use, so a rule cannot be stored under one spelling and looked up under another.
+ * Rows whose patterns collide after normalization are dropped rather than resolved: ADR-0001
+ * section 7 replaces the previous "the last one wins" behaviour, under which a duplicate looked
+ * harmless right up until the wrong rule was the one that applied.
  */
-final class RuleMatcher {
+public final class RuleMatcher {
     /**
      * Empty matcher, used before any rules are configured.
      */
-    static final RuleMatcher EMPTY = new RuleMatcher(List.of());
+    public static final RuleMatcher EMPTY = new RuleMatcher(List.of());
 
     private final Map<String, FingerprintRule> exact;
 
@@ -30,26 +39,32 @@ final class RuleMatcher {
      */
     private final List<Object[]> wildcards;
 
-    RuleMatcher(List<FingerprintRule> rules) {
+    public RuleMatcher(List<FingerprintRule> rules) {
+        // Two passes, because a duplicate disqualifies every row claiming that key, including the
+        // one already indexed.
+        var contested = new HashSet<String>();
+        var claimed = new HashSet<String>();
+        for (var raw : rules) {
+            var key = keyOf(raw);
+            if (key != null && !claimed.add(key)) {
+                contested.add(key);
+            }
+        }
+
         var exact = new HashMap<String, FingerprintRule>();
         var wildcards = new ArrayList<Object[]>();
-
         for (var raw : rules) {
-            if (raw == null) continue;
+            var key = keyOf(raw);
+            if (key == null || contested.contains(key)) continue;
 
             var rule = raw.normalized();
-            if (!rule.enabled || rule.hostPattern.isEmpty()) continue;
+            if (!rule.enabled) continue;
 
-            var pattern = rule.hostPattern.toLowerCase(Locale.ROOT);
-
-            // Accept ".example.com" as a synonym for "*.example.com"; users type both.
-            if (pattern.startsWith("*.")) {
-                wildcards.add(new Object[]{pattern.substring(1), rule});
-            } else if (pattern.startsWith(".")) {
-                wildcards.add(new Object[]{pattern, rule});
+            if (key.startsWith(HostKey.WILDCARD_PREFIX)) {
+                // ".example.com": matches any subdomain, deliberately not the apex.
+                wildcards.add(new Object[]{key.substring(1), rule});
             } else {
-                // Later duplicates win, matching the "last edit sticks" expectation in the table.
-                exact.put(pattern, rule);
+                exact.put(key, rule);
             }
         }
 
@@ -59,17 +74,30 @@ final class RuleMatcher {
         this.wildcards = List.copyOf(wildcards);
     }
 
-    boolean isEmpty() {
+    /**
+     * @return the normalized key a row claims, or null when the row is not usable at all. A
+     * disabled row still claims its key, so disabling one half of a duplicate pair does not
+     * quietly promote the other.
+     */
+    private static String keyOf(FingerprintRule raw) {
+        if (raw == null) return null;
+        return HostKey.keyOrNull(raw.normalized().hostPattern, HostKey.Mode.RULE_KEY);
+    }
+
+    public boolean isEmpty() {
         return exact.isEmpty() && wildcards.isEmpty();
     }
 
     /**
      * @return the most specific rule for {@code host}, or null if none applies.
      */
-    FingerprintRule match(String host) {
+    public FingerprintRule match(String host) {
         if (host == null || host.isEmpty()) return null;
 
-        var normalized = host.toLowerCase(Locale.ROOT);
+        // The request hot path asks in exact-query mode: a request is for one host, never a
+        // pattern, so "*.example.com" arriving as a Host header must not match anything.
+        var normalized = HostKey.keyOrNull(host, HostKey.Mode.EXACT_QUERY);
+        if (normalized == null) return null;
 
         var hit = exact.get(normalized);
         if (hit != null) return hit;
@@ -116,6 +144,9 @@ final class RuleMatcher {
 
         check(RuleMatcher.EMPTY.isEmpty() && hit(RuleMatcher.EMPTY, "example.com", null), "empty matcher matches nothing");
 
+        checkDuplicatesNeverMatch();
+        checkUnusableRowsNeverMatch();
+
         checkOverrides();
 
         // Rules deserialized by Gson can carry null strings; they must not blow up.
@@ -131,6 +162,59 @@ final class RuleMatcher {
         check(normalizedHit != null && normalizedHit.fingerprint.isEmpty(), "matched rules have non-null fields");
 
         System.out.println("RuleMatcher self-check passed");
+    }
+
+    /**
+     * A duplicated pattern must disable both rows, not silently pick one. This is the regression
+     * ADR-0001 section 7 asks for: the old behaviour let the last exact row overwrite the first,
+     * so which of two contradictory rules applied depended on table order.
+     */
+    private static void checkDuplicatesNeverMatch() {
+        var first = rule("dup.com", "chrome");
+        var second = rule("dup.com", "firefox");
+        check(hit(new RuleMatcher(List.of(first, second)), "dup.com", null), "a duplicate exact key matches nothing");
+        check(hit(new RuleMatcher(List.of(second, first)), "dup.com", null), "in either order");
+
+        // The two wildcard spellings are the same key, so they collide too.
+        check(hit(new RuleMatcher(List.of(rule("*.w.com", "chrome"), rule(".w.com", "firefox"))), "a.w.com", null),
+                "\"*.x\" and \".x\" are one key and collide");
+
+        // Case and whitespace do not create a second rule either.
+        check(hit(new RuleMatcher(List.of(rule("Dup.com", "chrome"), rule(" dup.COM ", "firefox"))), "dup.com", null),
+                "spelling differences do not escape the duplicate check");
+
+        // Disabling one half must not promote the other; the pattern is still ambiguous on disk.
+        var disabled = rule("dup.com", "firefox");
+        disabled.enabled = false;
+        check(hit(new RuleMatcher(List.of(first, disabled)), "dup.com", null),
+                "disabling one half of a duplicate does not promote the other");
+
+        // A duplicate must not take unrelated rules down with it.
+        var matcher = new RuleMatcher(List.of(first, second, rule("fine.com", "safari")));
+        check(hit(matcher, "fine.com", "safari"), "an unrelated rule still matches");
+    }
+
+    /**
+     * Rows the settings table tolerates while they are being typed must never reach a request.
+     */
+    private static void checkUnusableRowsNeverMatch() {
+        var junk = List.of(
+                rule("", "chrome"),
+                rule("   ", "chrome"),
+                rule("http://x.com", "chrome"),
+                rule("x.com:443", "chrome"),
+                rule("a.*.com", "chrome"),
+                rule("x..com", "chrome"));
+        var matcher = new RuleMatcher(junk);
+        check(matcher.isEmpty(), "no unusable row is indexed");
+        for (var host : new String[]{"x.com", "a.x.com", "com", ""}) {
+            check(matcher.match(host) == null, "unusable rows match nothing, including \"" + host + "\"");
+        }
+
+        // A wildcard arriving as a request host is a lookup, not a pattern.
+        var wild = new RuleMatcher(List.of(rule("*.example.com", "firefox")));
+        check(wild.match("*.example.com") == null, "a wildcard is not itself a matchable host");
+        check(wild.match("a.example.com") != null, "but it still matches a subdomain");
     }
 
     /**

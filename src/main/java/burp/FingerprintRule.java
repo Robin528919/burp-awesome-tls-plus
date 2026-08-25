@@ -86,7 +86,7 @@ public class FingerprintRule {
      * null when loading JSON written by an older version. Normalize instead of null-checking
      * at every use site.
      */
-    FingerprintRule normalized() {
+    public FingerprintRule normalized() {
         return new FingerprintRule(
                 orEmpty(hostPattern).trim(),
                 orEmpty(fingerprint).trim(),
@@ -96,6 +96,46 @@ public class FingerprintRule {
                 enabled
         );
     }
+
+    /**
+     * Like {@link #normalized()} but without the trim, so the stored spelling survives verbatim.
+     * <p>
+     * Rows the matcher rejects are kept on disk untouched and hashed as-is, so that editing one
+     * still changes the settings revision. Trimming here would make {@code " a.com "} and
+     * {@code "a.com"} hash alike, and a user who fixed the whitespace would be told nothing had
+     * changed. Only the null-to-empty materialization Gson forces on us is applied.
+     */
+    public FingerprintRule materialized() {
+        return new FingerprintRule(
+                orEmpty(hostPattern),
+                orEmpty(fingerprint),
+                orEmpty(hexClientHello),
+                orEmpty(externalProxyUrl),
+                httpTimeout,
+                enabled
+        );
+    }
+
+    /**
+     * @return the value of one known field, for diffing and canonicalization.
+     */
+    public Object get(String field) {
+        return switch (field) {
+            case "hostPattern" -> hostPattern;
+            case "fingerprint" -> fingerprint;
+            case "hexClientHello" -> hexClientHello;
+            case "externalProxyUrl" -> externalProxyUrl;
+            case "httpTimeout" -> httpTimeout;
+            case "enabled" -> enabled;
+            default -> null;
+        };
+    }
+
+    /**
+     * Every known field, in the order the canonical document and the diff present them.
+     */
+    public static final java.util.List<String> FIELDS = java.util.List.of(
+            "hostPattern", "enabled", "fingerprint", "hexClientHello", "externalProxyUrl", "httpTimeout");
 
     private static String orEmpty(String s) {
         return s == null ? "" : s;
