@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"sync"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	utls "github.com/bogdanfinn/utls"
@@ -16,7 +18,13 @@ import (
 const ConfigurationHeaderKey = "Awesometlsconfig"
 
 var (
-	s         *fhttp.Server
+	s *fhttp.Server
+
+	// proxy and isProxyOn are read and written from request handlers, which fhttp runs
+	// concurrently, so they need a lock. The intercept proxy is deliberately a single global:
+	// starting and stopping it per request would rebind its port constantly and cut live
+	// connections, which is why UseInterceptedFingerprint has to stay a global setting.
+	proxyMu   sync.Mutex
 	proxy     *interceptProxy
 	isProxyOn bool
 )
@@ -48,22 +56,13 @@ func StartServer(addr string) error {
 			return
 		}
 
-		if !isProxyOn && config.UseInterceptedFingerprint {
-			if err = StartProxy(config.InterceptProxyAddr, config.BurpAddr); err != nil {
-				writeError(w, err)
-				return
-			}
-			isProxyOn = true
-		} else if isProxyOn && !config.UseInterceptedFingerprint {
-			if err = StopProxy(); err != nil {
-				writeError(w, err)
-				return
-			}
-			isProxyOn = false
+		if err = syncProxyState(config.UseInterceptedFingerprint, config.InterceptProxyAddr, config.BurpAddr); err != nil {
+			writeError(w, err)
+			return
 		}
 
-		if proxy != nil {
-			if interceptedFingerprint := proxy.getTLSFingerprint(); interceptedFingerprint != "" && config.UseInterceptedFingerprint {
+		if config.UseInterceptedFingerprint {
+			if interceptedFingerprint := interceptedClientHello(); interceptedFingerprint != "" {
 				config.HexClientHello = HexClientHello(interceptedFingerprint)
 			}
 		}
@@ -126,42 +125,134 @@ func StartServer(addr string) error {
 		NextProtos: []string{"http/1.1"},
 	}
 
+	setSpoofStatus(StateStarting, "", "")
+
 	listener, err := net.Listen("tcp", s.Addr)
 	if err != nil {
-		return fmt.Errorf("listen, err: %w", err)
+		wrapped := fmt.Errorf("listen, err: %w", err)
+		setSpoofStatus(StateFailed, "", wrapped.Error())
+		return wrapped
 	}
+
+	// The address the socket is actually bound to, which is what Java must be told. The requested
+	// address is not the same thing once a port of 0 or a changed setting is involved.
+	setSpoofStatus(StateRunning, listener.Addr().String(), "")
 
 	tlsListener := utls.NewListener(listener, s.TLSConfig)
 
 	if err := s.Serve(tlsListener); err != nil {
-		return fmt.Errorf("serve, err: %w", err)
+		// Shutdown makes Serve return ErrServerClosed. That is the normal way this function ends,
+		// not a failure, and reporting it as FAILED would leave the UI claiming the server crashed
+		// every time the extension is unloaded.
+		if errors.Is(err, fhttp.ErrServerClosed) {
+			setSpoofStatus(StateStopped, "", "")
+			return fmt.Errorf("Server stopped")
+		}
+		wrapped := fmt.Errorf("serve, err: %w", err)
+		setSpoofStatus(StateFailed, "", wrapped.Error())
+		return wrapped
 	}
 
+	setSpoofStatus(StateStopped, "", "")
 	return nil
 }
 
-func StartProxy(interceptAddr, burpAddr string) (err error) {
+// syncProxyState starts or stops the shared intercept proxy to match the request's global flag.
+func syncProxyState(wanted bool, interceptAddr, burpAddr string) error {
+	proxyMu.Lock()
+	defer proxyMu.Unlock()
+
+	if wanted == isProxyOn {
+		return nil
+	}
+
+	if wanted {
+		if err := startProxyLocked(interceptAddr, burpAddr); err != nil {
+			return err
+		}
+		isProxyOn = true
+		return nil
+	}
+
+	if err := stopProxyLocked(); err != nil {
+		return err
+	}
+	isProxyOn = false
+	return nil
+}
+
+// interceptedClientHello returns the most recently captured ClientHello, or "" if there is none.
+func interceptedClientHello() string {
+	proxyMu.Lock()
+	p := proxy
+	proxyMu.Unlock()
+
+	if p == nil {
+		return ""
+	}
+	return p.getTLSFingerprint()
+}
+
+func StartProxy(interceptAddr, burpAddr string) error {
+	proxyMu.Lock()
+	defer proxyMu.Unlock()
+
+	if err := startProxyLocked(interceptAddr, burpAddr); err != nil {
+		return err
+	}
+	isProxyOn = true
+	return nil
+}
+
+func startProxyLocked(interceptAddr, burpAddr string) error {
+	setInterceptStatus(StateStarting, "", "")
+	setBurpUpstream(burpAddr, "")
+
 	p, err := newInterceptProxy(interceptAddr, burpAddr)
 	if err != nil {
+		setInterceptStatus(StateFailed, "", err.Error())
+		setBurpUpstream(burpAddr, err.Error())
 		return err
 	}
 
 	proxy = p
+	setInterceptStatus(StateRunning, p.listener.Addr().String(), "")
 
-	go proxy.Start()
+	go p.Start()
 
 	return nil
 }
 
-func StopProxy() (err error) {
+func StopProxy() error {
+	proxyMu.Lock()
+	defer proxyMu.Unlock()
+
+	if err := stopProxyLocked(); err != nil {
+		return err
+	}
+	isProxyOn = false
+	return nil
+}
+
+func stopProxyLocked() error {
 	if proxy == nil {
 		return nil
 	}
-	return proxy.Stop()
+	err := proxy.Stop()
+	proxy = nil
+	if err != nil {
+		setInterceptStatus(StateFailed, "", err.Error())
+		return err
+	}
+	setInterceptStatus(StateStopped, "", "")
+	setBurpUpstream("", "")
+	return nil
 }
 
 func StopServer() error {
-	return s.Shutdown(context.Background())
+	err := s.Shutdown(context.Background())
+	setSpoofStatus(StateStopped, "", "")
+	return err
 }
 
 func writeError(w fhttp.ResponseWriter, err error) {

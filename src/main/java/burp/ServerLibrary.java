@@ -13,5 +13,12 @@ public interface ServerLibrary extends Library {
 
     String GetFingerprints();
 
+    /**
+     * @return the Go side's own view of its listeners, as JSON. See {@code runtimestatus.go}.
+     * Java must not infer any of this; a listener keeps serving on the address it bound to, not
+     * the one currently in the settings.
+     */
+    String GetRuntimeStatus();
+
     void SmokeTest();
 }
