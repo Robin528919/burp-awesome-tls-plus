@@ -85,6 +85,9 @@ final class AiControlPanel {
         this.settings = settings;
         this.onProposalChanged = onProposalChanged;
 
+        // Without an explicit editor a JSpinner applies the locale's grouping separator, so the
+        // port renders as "8,885". A port is an identifier, not a quantity.
+        spinnerPort.setEditor(new JSpinner.NumberEditor(spinnerPort, "#"));
         spinnerPort.setValue(settings.aiControl().port());
         checkBoxFullAudit.setSelected(settings.aiControl().fullAudit());
 
@@ -117,8 +120,10 @@ final class AiControlPanel {
     private JComponent buildHeader() {
         var panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setAlignmentX(JComponent.LEFT_ALIGNMENT);
 
         var controls = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        controls.setAlignmentX(JComponent.LEFT_ALIGNMENT);
         controls.add(new JLabel("Port"));
         controls.add(spinnerPort);
         controls.add(buttonToggle);
@@ -126,16 +131,17 @@ final class AiControlPanel {
         panel.add(controls);
 
         labelEndpoint.setBorder(new EmptyBorder(0, 8, 4, 0));
-        panel.add(labelEndpoint);
+        panel.add(leftAligned(labelEndpoint));
 
         // The disclosure, in full, every time. Section 4.2 requires it to be unavoidable rather
         // than something that scrolls past once during setup.
         var warning = new JPanel();
         warning.setLayout(new BoxLayout(warning, BoxLayout.Y_AXIS));
+        warning.setAlignmentX(JComponent.LEFT_ALIGNMENT);
         warning.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createTitledBorder("Before you enable this"),
                 new EmptyBorder(4, 8, 8, 8)));
-        warning.add(SettingsTab.descriptionText(
+        warning.add(leftAligned(SettingsTab.warningText(
                 "The endpoint listens on 127.0.0.1 only, and has no authentication of any kind.\n\n"
                         + "• Any process running as you on this machine can read your complete "
                         + "settings through it, including external proxy credentials and the full "
@@ -144,24 +150,35 @@ final class AiControlPanel {
                         + "• Nothing it submits is applied until you approve it here. Applying, "
                         + "rejecting and reverting are only ever done in this tab.\n"
                         + "• Binding to loopback is not authentication, and this warning is shown "
-                        + "every time for that reason."));
+                        + "every time for that reason.")));
         warning.add(Box.createVerticalStrut(6));
-        warning.add(checkBoxUnderstood);
+        warning.add(leftAligned(checkBoxUnderstood));
         panel.add(warning);
 
         var auditPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        auditPanel.setAlignmentX(JComponent.LEFT_ALIGNMENT);
         auditPanel.add(checkBoxFullAudit);
         var openFolder = new JButton("Open audit folder");
         openFolder.addActionListener(e -> openAuditFolder());
         auditPanel.add(openFolder);
         panel.add(auditPanel);
-        panel.add(SettingsTab.descriptionText(
+        panel.add(leftAligned(SettingsTab.descriptionText(
                 "The audit trail is plain text and is not encrypted. It records complete request "
                         + "and result values, credentials included, and can be read by anything with "
                         + "access to the folder — other local users, backup software, and sync "
-                        + "clients. There is no delete button here; manage the files yourself."));
+                        + "clients. There is no delete button here; manage the files yourself.")));
 
         return panel;
+    }
+
+    /**
+     * BoxLayout positions each child by its own alignmentX, and the defaults differ by component —
+     * a check box centres itself while a text area does not — so anything stacked vertically has to
+     * say which edge it wants or the column comes out ragged.
+     */
+    private static <T extends JComponent> T leftAligned(T component) {
+        component.setAlignmentX(JComponent.LEFT_ALIGNMENT);
+        return component;
     }
 
     private JComponent buildBody() {

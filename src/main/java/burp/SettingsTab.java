@@ -203,12 +203,17 @@ public class SettingsTab {
     private JComponent buildActionBar() {
         var buttonSave = new JButton("Save settings");
         buttonSave.addActionListener(e -> save());
-        buttonSave.setToolTipText("Saves all three tabs at once.");
+        buttonSave.setToolTipText("Saves the Defaults and Advanced tabs, and any pending rule edit.");
 
         var bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
         bar.setBorder(new EmptyBorder(8, 4, 0, 4));
         bar.add(buttonSave);
         bar.add(labelFeedback);
+
+        // AI Control has nothing this button saves: the port is stored when the listener starts and
+        // the audit switch when it is clicked. Leaving it visible there invites a click that
+        // silently commits whatever is sitting in a tab the user is not looking at.
+        tabs.addChangeListener(e -> bar.setVisible(tabs.getSelectedIndex() != TAB_AI_CONTROL));
         return bar;
     }
 
@@ -597,6 +602,22 @@ public class SettingsTab {
      * Wrapping, non-editable body text. A plain JLabel would clip instead of wrapping, and HTML
      * is not an option because Burp renders it literally.
      */
+    /**
+     * Like {@link #descriptionText}, but in the normal text colour.
+     * <p>
+     * The muted hint colour is right for a field's explanation and wrong for a security
+     * disclosure: Burp renders non-editable text areas dimmed, so the AI Control warning ends up
+     * looking like disabled text — exactly the thing a reader's eye skips.
+     */
+    static JTextArea warningText(String text) {
+        var area = descriptionText(text);
+        var foreground = UIManager.getColor("Label.foreground");
+        if (foreground != null) {
+            area.setForeground(foreground);
+        }
+        return area;
+    }
+
     static JTextArea descriptionText(String text) {
         var area = new JTextArea(text);
         area.setEditable(false);
