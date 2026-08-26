@@ -225,7 +225,9 @@ public final class Analysis {
                         "The next request starts or stops the shared intercept proxy accordingly."));
             } else {
                 impacts.add(new Wire.RuntimeImpact(path, "NEXT_REQUEST", false,
-                        "Applies to requests sent after this is approved."));
+                        // Neutral on purpose: with auto-apply armed there is no approval step,
+                        // and a message promising one would be wrong half the time.
+                        "Applies to requests sent after this takes effect."));
             }
         }
         return impacts.stream().sorted(Wire.RuntimeImpact.ORDER).toList();
