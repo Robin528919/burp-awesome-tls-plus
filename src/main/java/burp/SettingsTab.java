@@ -251,12 +251,39 @@ public class SettingsTab {
         return wrapScrollable(form);
     }
 
+    /**
+     * Read-only view of the selected row, so a long value can be read without a wider column.
+     */
+    private final JTextArea textRuleDetailHex = new JTextArea(4, 10);
+    private final JTextArea textRuleDetailNote = new JTextArea(1, 10);
+    private final JLabel labelRuleDetailTitle = new JLabel();
+    private final JLabel labelRuleDetailHexFacts = new JLabel();
+    private final JButton buttonRuleDetailCopy = new JButton("Copy hex");
+    private final JPanel panelRuleDetailNote = new JPanel(new BorderLayout(6, 0));
+    private JComponent ruleDetailHexScroll;
+
     private JComponent buildRulesPanel() {
         var panel = new JPanel(new BorderLayout(0, 8));
         panel.setBorder(new EmptyBorder(12, 12, 12, 12));
 
         panel.add(buildRulesHelp(), BorderLayout.NORTH);
-        panel.add(new JScrollPane(ruleTable), BorderLayout.CENTER);
+
+        // A cell cannot show a 500-byte ClientHello, and widening the column would starve the six
+        // others. The table's empty vertical space is the only space this window has to spare, so
+        // the detail goes underneath, full width, where a hex stream can wrap and be read.
+        var tableScroll = new JScrollPane(ruleTable);
+        // Both halves get an explicit preferred height, because a split pane lays out to preferred
+        // sizes first and a JScrollPane's default is large enough to push the divider off-screen.
+        tableScroll.setPreferredSize(new Dimension(0, 240));
+        tableScroll.setMinimumSize(new Dimension(0, 80));
+
+        var split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, buildRuleDetail());
+        // All the extra height goes to the table: the detail needs a readable fixed height, and
+        // rows are what there can be an unbounded number of.
+        split.setResizeWeight(1);
+        split.setBorder(null);
+        split.setContinuousLayout(true);
+        panel.add(split, BorderLayout.CENTER);
 
         var buttonAdd = new JButton("Add rule");
         buttonAdd.addActionListener(e -> {
@@ -293,6 +320,142 @@ public class SettingsTab {
         panel.add(footer, BorderLayout.SOUTH);
 
         return panel;
+    }
+
+
+    /**
+     * The detail pane under the rules table.
+     * <p>
+     * Read-only on purpose: editing still happens in the cell, so there is no second source of
+     * truth to keep in sync with the table model, the autosave timer and the dirty check.
+     */
+    private JComponent buildRuleDetail() {
+        labelRuleDetailTitle.setFont(labelRuleDetailTitle.getFont().deriveFont(Font.BOLD));
+
+        for (var area : List.of(textRuleDetailHex, textRuleDetailNote)) {
+            area.setEditable(false);
+            area.setLineWrap(true);
+            // A hex stream has no spaces, so it only wraps at all with character wrapping off.
+            area.setWrapStyleWord(false);
+            area.setBorder(new EmptyBorder(4, 6, 4, 6));
+        }
+        textRuleDetailHex.setFont(new Font(Font.MONOSPACED, Font.PLAIN,
+                UIManager.getFont("Label.font") == null ? 12 : UIManager.getFont("Label.font").getSize()));
+
+        buttonRuleDetailCopy.addActionListener(e -> {
+            var hex = textRuleDetailHex.getText();
+            if (!hex.isEmpty()) {
+                Toolkit.getDefaultToolkit().getSystemClipboard()
+                        .setContents(new java.awt.datatransfer.StringSelection(hex), null);
+            }
+        });
+
+        var header = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        header.add(labelRuleDetailTitle);
+        header.add(labelRuleDetailHexFacts);
+        header.add(buttonRuleDetailCopy);
+
+        // The note sits above the hex and keeps its natural height. The hex is why this pane
+        // exists, so it takes every row that is left.
+        textRuleDetailNote.setRows(1);
+        var noteScroll = new JScrollPane(textRuleDetailNote,
+                ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        noteScroll.setPreferredSize(new Dimension(0, 40));
+        var noteLabel = new JLabel("Note");
+        noteLabel.setBorder(new EmptyBorder(4, 2, 0, 0));
+        noteLabel.setVerticalAlignment(SwingConstants.TOP);
+        panelRuleDetailNote.add(noteLabel, BorderLayout.WEST);
+        panelRuleDetailNote.add(noteScroll, BorderLayout.CENTER);
+
+        var top = new JPanel(new BorderLayout(0, 4));
+        top.add(header, BorderLayout.NORTH);
+        top.add(panelRuleDetailNote, BorderLayout.CENTER);
+
+        ruleDetailHexScroll = new JScrollPane(textRuleDetailHex,
+                ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+
+        var panel = new JPanel(new BorderLayout(0, 6));
+        panel.setBorder(new EmptyBorder(8, 0, 0, 0));
+        panel.add(top, BorderLayout.NORTH);
+        panel.add(ruleDetailHexScroll, BorderLayout.CENTER);
+        panel.setMinimumSize(new Dimension(0, 150));
+        panel.setPreferredSize(new Dimension(0, 210));
+
+        ruleTable.getSelectionModel().addListSelectionListener(e -> showRuleDetail());
+        ruleTableModel.addTableModelListener(e -> showRuleDetail());
+        showRuleDetail();
+        return panel;
+    }
+
+    /**
+     * Fills the detail pane from the selected row, or empties it when the selection is not one row.
+     */
+    private void showRuleDetail() {
+        var rows = ruleTable.getSelectedRowCount();
+        if (rows != 1) {
+            labelRuleDetailTitle.setText(rows == 0
+                    ? "Select a row to see its full Hex ClientHello and note."
+                    : rows + " rows selected.");
+            labelRuleDetailHexFacts.setText("");
+            buttonRuleDetailCopy.setEnabled(false);
+            textRuleDetailHex.setText("");
+            textRuleDetailNote.setText("");
+            panelRuleDetailNote.setVisible(false);
+            ruleDetailHexScroll.setVisible(false);
+            return;
+        }
+
+        var viewRow = ruleTable.getSelectedRow();
+        if (viewRow < 0 || viewRow >= ruleTable.getRowCount()) {
+            // A row was removed and the selection has not caught up yet; the next event fixes it.
+            return;
+        }
+        var row = ruleTable.convertRowIndexToModel(viewRow);
+        if (row < 0 || row >= ruleTableModel.getRowCount()) {
+            return;
+        }
+        var rule = ruleTableModel.ruleAt(row);
+        var hex = rule.hexClientHello == null ? "" : rule.hexClientHello.trim();
+
+        labelRuleDetailTitle.setText(rule.hostPattern.isEmpty() ? "(no host pattern)" : rule.hostPattern);
+        labelRuleDetailHexFacts.setText(hex.isEmpty()
+                ? "—  no Hex ClientHello; this row inherits the Defaults tab."
+                : "—  Hex ClientHello, " + describeHex(hex));
+        buttonRuleDetailCopy.setEnabled(!hex.isEmpty());
+        textRuleDetailHex.setText(hex);
+        textRuleDetailHex.setCaretPosition(0);
+        textRuleDetailNote.setText(rule.note);
+        textRuleDetailNote.setCaretPosition(0);
+
+        // An empty box below a line that already says the value is absent is just a box.
+        ruleDetailHexScroll.setVisible(!hex.isEmpty());
+        panelRuleDetailNote.setVisible(!rule.note.isEmpty());
+    }
+
+    /**
+     * What is actually worth knowing when eyeballing a captured hello: how much of it there is, and
+     * whether it is a whole TLS record. A truncated capture is still valid hex and fails much later,
+     * so saying so here is cheaper than discovering it from a handshake error.
+     */
+    private static String describeHex(String hex) {
+        byte[] bytes;
+        try {
+            bytes = java.util.HexFormat.of().parseHex(hex);
+        } catch (IllegalArgumentException e) {
+            return hex.length() + " characters — not valid hex.";
+        }
+        var size = bytes.length + " bytes";
+        if (bytes.length < 6 || (bytes[0] & 0xFF) != 0x16 || (bytes[5] & 0xFF) != 0x01) {
+            return size + " — does not start with a TLS handshake record (16 …) and a ClientHello (… 01).";
+        }
+        var declared = ((bytes[3] & 0xFF) << 8 | (bytes[4] & 0xFF)) + 5;
+        if (declared != bytes.length) {
+            return size + " — the record header declares " + declared
+                    + ", so this is truncated or spans several TCP segments.";
+        }
+        return size + " — a complete ClientHello record.";
     }
 
     private void removeSelectedRules() {
