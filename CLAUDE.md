@@ -202,8 +202,8 @@ Things that will look like bugs and are not:
   Burp-only switch that commits a valid proposal on arrival and returns `status: "APPLIED"`. It
   removes the review step and nothing else: validation, journal, audit, three-way merge and the
   undo all still run, and a dirty settings tab, a moved revision or an unreadable rules file still
-  block it. The switch is off by default, never persisted, confirmed each time it is armed, and
-  disarmed when the listener stops — a client cannot arm it, and it cannot survive a restart. The
+  block it. The switch is off by default and confirmed when the user arms it; since ADR section 24
+  it is remembered across restarts, and a client still cannot arm it. The
   `tools/list` description and `server/discover` instructions change with it, because a tool that
   claims it never applies settings while auto-apply is armed is worse than no description.
 - **Exactly one phase is the commit decision.** `TransactionJournal.Phase.COMMIT_DECIDED`. Before
@@ -222,9 +222,10 @@ Things that will look like bugs and are not:
   the matcher all call it and only switch `Mode`.
 - **AI Control's own port, enable state, audit switch and risk acknowledgement are not settings.**
   They do not enter the revision, so enabling the listener cannot invalidate a proposal waiting for
-  review. The enable state and auto-apply are deliberately not persisted; the risk acknowledgement
-  is (ADR section 23) — the warning is shown every time regardless, and re-collecting the same tick
-  produced no new consent.
+  review. Only the enable state is deliberately not persisted — the listener being closed on every
+  start is what bounds the unauthenticated surface. The risk acknowledgement (section 23) and
+  auto-apply (section 24) are both stored, because neither does anything until the user has opened
+  the listener, and re-collecting the same consent produced no new consent.
 - **The request path uses the Go listener's actual address**, via `Settings#activeSpoofProxyAddress`,
   not the configured one. Changing the address does not move a running server.
 

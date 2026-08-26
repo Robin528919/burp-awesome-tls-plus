@@ -18,6 +18,7 @@ final class AiControlSettings {
     private static final String PORT_KEY = "AiControlPort";
     private static final String AUDIT_KEY = "AiControlFullAudit";
     private static final String RISK_ACK_KEY = "AiControlRiskAcknowledged";
+    private static final String AUTO_APPLY_KEY = "AiControlAutoApply";
 
     private final Preferences storage;
 
@@ -35,16 +36,22 @@ final class AiControlSettings {
      */
     private volatile boolean riskAcknowledged;
 
-    /** Not stored anywhere: every Burp session starts with the endpoint closed. */
+    /**
+     * Not stored anywhere: every Burp session starts with the endpoint closed.
+     * <p>
+     * This is the one that must not survive a restart. An unauthenticated endpoint returning full
+     * credentials to any local process should never come back by itself; everything else here only
+     * decides how it behaves once the user has deliberately opened it.
+     */
     private volatile boolean enabled;
 
     /**
      * Whether a proposal is applied the moment it arrives, with no review.
      * <p>
-     * Deliberately not persisted, for the same reason as {@link #enabled}: it removes the only
-     * thing standing between an unauthenticated local endpoint and a silent settings change, so it
-     * has to be a decision the user makes again each session rather than one that quietly survives
-     * a restart.
+     * Persisted (ADR-0001 section 24). It still cannot act on its own: the listener is closed on
+     * every start and only the user can open it, so a stored arming decides what happens after
+     * that deliberate act, not whether it happens. The confirmation is asked when the user arms
+     * it, not when a stored arming is restored.
      */
     private volatile boolean autoApply;
 
@@ -61,6 +68,9 @@ final class AiControlSettings {
 
         var storedAck = storage.getBoolean(RISK_ACK_KEY);
         this.riskAcknowledged = storedAck != null && storedAck;
+
+        var storedAutoApply = storage.getBoolean(AUTO_APPLY_KEY);
+        this.autoApply = storedAutoApply != null && storedAutoApply;
     }
 
     int port() {
@@ -100,11 +110,6 @@ final class AiControlSettings {
 
     void setEnabled(boolean value) {
         this.enabled = value;
-        if (!value) {
-            // Turning the endpoint off also disarms auto-apply, so re-enabling never silently
-            // resumes applying changes without being asked for again.
-            this.autoApply = false;
-        }
     }
 
     boolean autoApply() {
@@ -113,5 +118,6 @@ final class AiControlSettings {
 
     void setAutoApply(boolean value) {
         this.autoApply = value;
+        storage.setBoolean(AUTO_APPLY_KEY, value);
     }
 }

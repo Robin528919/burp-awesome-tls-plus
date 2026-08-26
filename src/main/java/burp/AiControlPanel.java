@@ -85,6 +85,13 @@ final class AiControlPanel {
     private final JCheckBox checkBoxUnderstood =
             new JCheckBox("I understand and accept that any process on this machine can read these values");
     private final JCheckBox checkBoxFullAudit = new JCheckBox("Record everything to the audit trail");
+
+    /**
+     * The long-form disclosure. Collapsed once acknowledged rather than once enabled: the point at
+     * which the user has read it is the tick, not the button, and leaving five paragraphs on screen
+     * after that is just something to scroll past.
+     */
+    private final Stack panelRiskDetail = new Stack();
     private final JCheckBox checkBoxAutoApply =
             new JCheckBox("Apply changes automatically, without review");
 
@@ -198,13 +205,15 @@ final class AiControlPanel {
         panel.row(labelEndpoint);
         panel.row(textGoServer);
 
-        // The disclosure, in full, every time. Section 4.2 requires it to be unavoidable rather
-        // than something that scrolls past once during setup.
+        // The disclosure is unavoidable rather than something that scrolls past once during setup:
+        // it is in full until it has been acknowledged, and the checkbox that collapses it keeps
+        // naming the risk afterwards. Section 4.2's other requirements — audit state and auto-apply
+        // state at decision time — stay on screen either way.
         var warning = new Stack();
         warning.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createTitledBorder("Before you enable this"),
                 new EmptyBorder(4, 8, 8, 8)));
-        warning.row(SettingsTab.warningText(
+        panelRiskDetail.row(SettingsTab.warningText(
                 "The endpoint listens on 127.0.0.1 only, and has no authentication of any kind.\n\n"
                         + "• Any process running as you on this machine can read your complete "
                         + "settings through it, including external proxy credentials and the full "
@@ -212,9 +221,14 @@ final class AiControlPanel {
                         + "• Any such process can submit a settings change.\n"
                         + "• With \"Apply changes automatically\" off, nothing it submits takes "
                         + "effect until you approve it here.\n"
-                        + "• Binding to loopback is not authentication, and this warning is shown "
-                        + "every time for that reason. Your acknowledgement below is remembered "
-                        + "across restarts; enabling the endpoint is not."));
+                        + "• Binding to loopback is not authentication. Your acknowledgement is "
+                        + "remembered across restarts; enabling the endpoint is not.\n\n"
+                        + "The audit trail is plain text and is not encrypted. It records complete "
+                        + "request and result values, credentials included, and can be read by "
+                        + "anything with access to the folder — other local users, backup software, "
+                        + "and sync clients. There is no delete button here; manage the files "
+                        + "yourself."));
+        warning.row(panelRiskDetail);
         warning.row(Box.createVerticalStrut(6));
         // Section 4.2 also requires the enable-time warning to state whether full audit is on. It
         // used to appear only in the endpoint line, which reads "not listening" at exactly the
@@ -228,11 +242,6 @@ final class AiControlPanel {
         panelSetup.setLayout(new BorderLayout(0, 4));
         var setupRows = new Stack();
         setupRows.row(warning);
-        setupRows.row(SettingsTab.descriptionText(
-                "The audit trail is plain text and is not encrypted. It records complete request "
-                        + "and result values, credentials included, and can be read by anything with "
-                        + "access to the folder — other local users, backup software, and sync "
-                        + "clients. There is no delete button here; manage the files yourself."));
         panelSetup.add(setupRows, BorderLayout.CENTER);
         panel.row(panelSetup);
 
@@ -532,7 +541,8 @@ final class AiControlPanel {
                         + "Everything else still applies: changes are validated, recorded, and "
                         + "\"Revert last AI apply\" still undoes the most recent one. It is only "
                         + "the review step that is skipped.\n\n"
-                        + "This is not remembered; it turns itself off when the listener stops.",
+                        + "This is remembered across restarts. The listener itself is not — it "
+                        + "stays closed until you open it, so nothing can arrive before you do.",
                 "Arm automatic apply", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
 
         var armed = confirmed == JOptionPane.YES_OPTION;
@@ -667,6 +677,9 @@ final class AiControlPanel {
         // while nothing is listening.
         spinnerPort.setEnabled(!enabled);
         checkBoxUnderstood.setEnabled(!enabled);
+        // Collapse on the tick, not on the button. Reading it is what the tick asserts, so leaving
+        // the long form up until the listener starts just adds something to scroll past.
+        panelRiskDetail.setVisible(!checkBoxUnderstood.isSelected());
 
         var blocked = settings.control().blockedReason();
         if (blocked != null) {

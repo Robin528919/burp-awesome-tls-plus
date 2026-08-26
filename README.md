@@ -78,7 +78,7 @@ them. It exposes exactly two tools:
 
 **Applying, rejecting and reverting are Burp UI actions.** There is no tool that applies a
 proposal. By default a proposal waits for you; there is also an **auto-apply** switch in the tab
-(off by default, never remembered, confirmed each time you arm it) that commits a valid change the
+(off by default, confirmed when you arm it, then remembered) that commits a valid change the
 moment it arrives — useful when you are iterating on a fingerprint and a click per round is the
 slow part. Arming it means any local process can change your settings with no prompt, which is
 what the confirmation says. Everything else still runs either way: validation, the audit trail, and
