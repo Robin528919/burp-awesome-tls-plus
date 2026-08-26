@@ -98,12 +98,14 @@ deliberate, accepted trade-off, not an oversight, and it means:
 - binding to loopback is not authentication, which is why the warning is shown every time you enable
   it, and why you have to tick a box to confirm you have read it.
 
-Enabling is per Burp session. The endpoint never comes back on its own after a restart.
+The tick is remembered across restarts — the risk is a property of the endpoint, not of today's
+session. Enabling is not: it is per Burp session, and the endpoint never comes back on its own after
+a restart.
 
 ### Using it
 
-1. Open **Awesome TLS → AI Control**, pick a port (default `8885`), tick the acknowledgement and
-   press **Enable**.
+1. Open **Awesome TLS → AI Control**, pick a port (default `8885`), tick the acknowledgement (only
+   the first time) and press **Enable**.
 2. Register the endpoint with your client. The tab's **Connect a client** section copies the exact
    command for you, with whatever port you chose:
 

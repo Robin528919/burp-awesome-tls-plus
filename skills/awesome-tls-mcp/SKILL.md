@@ -10,8 +10,9 @@ Suite extension, which spoofs browser TLS fingerprints on Burp's outgoing traffi
 expose a local MCP endpoint; this file is what tells you how to drive it correctly.
 
 **Prerequisites** — if the `awesome_tls.settings.*` tools are not visible: the user must open
-**Awesome TLS → AI Control** in Burp, tick the acknowledgement and press **Enable** (off by default,
-and never comes back on its own after a Burp restart), then register the endpoint with their client.
+**Awesome TLS → AI Control** in Burp, tick the acknowledgement (remembered after the first time) and
+press **Enable** (off by default, and never comes back on its own after a Burp restart), then
+register the endpoint with their client.
 The tab's *Connect a client* section copies the exact command.
 
 Exactly two tools exist, on `http://127.0.0.1:8885/mcp` (port configurable, loopback only, **no

@@ -220,9 +220,11 @@ Things that will look like bugs and are not:
   inspect, propose, approval or recovery: it has no side effects, where `load()` quarantines.
 - **`HostKey` is the only host normalizer.** The request path, the UI, AI patches, the revision and
   the matcher all call it and only switch `Mode`.
-- **AI Control's own port, enable state and audit switch are not settings.** They do not enter the
-  revision, so enabling the listener cannot invalidate a proposal waiting for review. The enable
-  state is deliberately not persisted.
+- **AI Control's own port, enable state, audit switch and risk acknowledgement are not settings.**
+  They do not enter the revision, so enabling the listener cannot invalidate a proposal waiting for
+  review. The enable state and auto-apply are deliberately not persisted; the risk acknowledgement
+  is (ADR section 23) — the warning is shown every time regardless, and re-collecting the same tick
+  produced no new consent.
 - **The request path uses the Go listener's actual address**, via `Settings#activeSpoofProxyAddress`,
   not the configured one. Changing the address does not move a running server.
 

@@ -126,6 +126,7 @@ final class AiControlPanel {
         spinnerPort.setEditor(new JSpinner.NumberEditor(spinnerPort, "#"));
         spinnerPort.setValue(settings.aiControl().port());
         checkBoxFullAudit.setSelected(settings.aiControl().fullAudit());
+        checkBoxUnderstood.setSelected(settings.aiControl().riskAcknowledged());
 
         root.setBorder(new EmptyBorder(8, 8, 8, 8));
         var content = new Stack();
@@ -149,7 +150,10 @@ final class AiControlPanel {
         root.add(actions, BorderLayout.SOUTH);
 
         buttonToggle.addActionListener(e -> toggle());
-        checkBoxUnderstood.addActionListener(e -> syncControls());
+        checkBoxUnderstood.addActionListener(e -> {
+            settings.aiControl().setRiskAcknowledged(checkBoxUnderstood.isSelected());
+            syncControls();
+        });
         checkBoxFullAudit.addActionListener(e -> {
             settings.aiControl().setFullAudit(checkBoxFullAudit.isSelected());
             syncControls();
@@ -209,7 +213,8 @@ final class AiControlPanel {
                         + "• With \"Apply changes automatically\" off, nothing it submits takes "
                         + "effect until you approve it here.\n"
                         + "• Binding to loopback is not authentication, and this warning is shown "
-                        + "every time for that reason."));
+                        + "every time for that reason. Your acknowledgement below is remembered "
+                        + "across restarts; enabling the endpoint is not."));
         warning.row(Box.createVerticalStrut(6));
         // Section 4.2 also requires the enable-time warning to state whether full audit is on. It
         // used to appear only in the endpoint line, which reads "not listening" at exactly the
@@ -473,8 +478,6 @@ final class AiControlPanel {
         if (control.enabled()) {
             settings.mcpServer().stop();
             control.setEnabled(false);
-            // Ticking the box again is part of enabling again, on purpose.
-            checkBoxUnderstood.setSelected(false);
             refresh();
             return;
         }

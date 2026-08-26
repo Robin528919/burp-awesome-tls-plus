@@ -17,11 +17,23 @@ import burp.api.montoya.persistence.Preferences;
 final class AiControlSettings {
     private static final String PORT_KEY = "AiControlPort";
     private static final String AUDIT_KEY = "AiControlFullAudit";
+    private static final String RISK_ACK_KEY = "AiControlRiskAcknowledged";
 
     private final Preferences storage;
 
     private volatile int port;
     private volatile boolean fullAudit;
+
+    /**
+     * Whether the user has accepted that any local process can read these values.
+     * <p>
+     * Persisted, unlike {@link #enabled}. The risk is a property of the endpoint, not of today's
+     * session, and it does not change between restarts — so re-collecting the same tick is friction
+     * that buys nothing. The warning itself is still on screen every time the listener is down,
+     * which is what ADR-0001 section 5 is actually protecting: the user seeing the fact, not the
+     * clicking. Enabling stays a deliberate per-session action.
+     */
+    private volatile boolean riskAcknowledged;
 
     /** Not stored anywhere: every Burp session starts with the endpoint closed. */
     private volatile boolean enabled;
@@ -46,6 +58,9 @@ final class AiControlSettings {
 
         var storedAudit = storage.getBoolean(AUDIT_KEY);
         this.fullAudit = storedAudit != null && storedAudit;
+
+        var storedAck = storage.getBoolean(RISK_ACK_KEY);
+        this.riskAcknowledged = storedAck != null && storedAck;
     }
 
     int port() {
@@ -68,6 +83,15 @@ final class AiControlSettings {
     void setFullAudit(boolean value) {
         this.fullAudit = value;
         storage.setBoolean(AUDIT_KEY, value);
+    }
+
+    boolean riskAcknowledged() {
+        return riskAcknowledged;
+    }
+
+    void setRiskAcknowledged(boolean value) {
+        this.riskAcknowledged = value;
+        storage.setBoolean(RISK_ACK_KEY, value);
     }
 
     boolean enabled() {
