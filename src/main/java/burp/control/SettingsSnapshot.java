@@ -133,6 +133,25 @@ public final class SettingsSnapshot {
     }
 
     /**
+     * The row a key names whether or not the snapshot can use it.
+     * <p>
+     * {@link #ruleByKey} only sees rows that survived validation, which is right for matching and
+     * wrong for validating a patch: a rule the patch has just made unusable is absent from that
+     * lookup, so checking it there would pass by finding nothing.
+     *
+     * @return the stored row normalized, or null when no row claims the key.
+     */
+    public FingerprintRule storedRuleWithKey(String normalizedKey) {
+        for (var stored : storedRules) {
+            var host = HostKey.normalize(stored.normalized().hostPattern, HostKey.Mode.RULE_KEY);
+            if (host.ok() && host.key().equals(normalizedKey)) {
+                return stored.normalized();
+            }
+        }
+        return null;
+    }
+
+    /**
      * @return storage indexes of rows that are on disk and in the table but never match. Their
      * count is all an AI client is told; their contents are not exposed, so a patch cannot
      * silently rewrite a row the user has not finished.

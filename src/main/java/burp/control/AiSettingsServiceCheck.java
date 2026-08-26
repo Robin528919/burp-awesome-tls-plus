@@ -183,6 +183,16 @@ public final class AiSettingsServiceCheck {
         rejects(f, "{\"settings\":{\"fingerprint\":null}}", Wire.Code.VALIDATION_FAILED,
                 "clearing a field that always has a value");
 
+        // A rule the patch itself makes unusable is the case the candidate snapshot hides rather
+        // than reports, so validating only what survived would let it through and then describe the
+        // commit with an empty diff. Both of these are caught by looking the row up in storage.
+        rejects(f, "{\"domainRules\":{\"upsert\":[{\"hostPattern\":\"hidden-probe.example.com\","
+                        + "\"note\":\"" + "n".repeat(Validation.NOTE_MAX + 1) + "\"}]}}",
+                Wire.Code.VALIDATION_FAILED, "a note over the length cap");
+        rejects(f, "{\"domainRules\":{\"upsert\":[{\"hostPattern\":\"hidden-probe.example.com\","
+                        + "\"hexClientHello\":\"zz\"}]}}",
+                Wire.Code.VALIDATION_FAILED, "a new rule the settings could not use");
+
         rejects(f, "{\"domainRules\":{\"upsert\":[{\"hostPattern\":\"http://x.com\",\"enabled\":true}]}}",
                 Wire.Code.VALIDATION_FAILED, "a host pattern that is a URL");
         rejects(f, "{\"domainRules\":{\"upsert\":[{\"hostPattern\":\"a.*.com\",\"enabled\":true}]}}",

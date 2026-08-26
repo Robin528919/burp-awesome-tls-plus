@@ -434,11 +434,23 @@ public final class AiSettingsService {
         // Catalog checks apply only to rules the patch touched, so a pre-existing rule naming a
         // fingerprint this build does not offer cannot block an unrelated change.
         for (var upsert : patch.upserts()) {
-            var rule = candidate.ruleByKey(upsert.key());
+            // Deliberately not ruleByKey: that only finds rows the candidate can use, so a rule the
+            // patch has just made unusable would be validated by finding nothing, then committed as
+            // a row that is hidden on arrival and reported with an empty diff.
+            var rule = candidate.storedRuleWithKey(upsert.key());
             if (rule != null) {
                 problems.addAll(Validation.rule(rule, 0, control.fingerprints(),
                         Validation.Policy.AI_PROPOSAL));
             }
+        }
+        // The backstop for anything the per-rule pass cannot name — a host pattern too broken to
+        // look up by key, or a duplicate that disables both claimants. A proposal that adds a row
+        // the settings cannot use is a proposal whose diff does not describe what it did.
+        if (candidate.hiddenInvalidRuleCount() > base.hiddenInvalidRuleCount() && problems.isEmpty()) {
+            return Built.of(Wire.error(Wire.Code.VALIDATION_FAILED,
+                    "This proposal adds a rule the settings cannot use, so it would be stored but "
+                            + "never match.", List.of(Wire.ErrorDetail.of("/patch/domainRules/upsert",
+                            "would_be_hidden")), base.revision()));
         }
         if (!problems.isEmpty()) {
             return Built.of(Wire.error(Wire.Code.VALIDATION_FAILED,
