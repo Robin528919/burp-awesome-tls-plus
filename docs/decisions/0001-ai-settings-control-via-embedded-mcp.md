@@ -261,7 +261,7 @@ External proxy URL 的 v1 语法与当前 Go dependency 对齐：trim 后允许�
 - 纳入 canonical revision 和三方合并，避免 AI 静默删除；
 - 从 `RuleMatcher` 中排除，因此不进入请求路径；
 - 从 inspect 的 rule 列表中隐藏，只返回 `hiddenInvalidRuleCount`；
-- 与 AI upsert/remove 的规范化 host 冲突时返回 `HIDDEN_RULE_CONFLICT`，要求用户先在 Burp 修复或删除。
+- 与 AI upsert/remove 的规范化 host 冲突时返回 `HIDDEN_RULE_CONFLICT`，要求用户先在 Burp 修复或删除。**（这对客户端是死路，且必须保持如此：见 §26.1。propose 本身不得造出隐藏行，见 §26.2。）**
 
 存在隐藏无效规则时，AI 仍可修改无关设置；这些行必须保持原样且继续 inactive。
 
@@ -1311,3 +1311,34 @@ Burp 自带运行时为 **JRE 24.0.1，且 `java --list-modules` 中没有 `jdk.
 §4.2 要求在决策时刻呈现的完整审计状态与 auto-apply 状态：未勾选时仍在区块内以完整句子呈现；勾选后由工具栏上那两个常驻 checkbox 承担，它们的标签本身就是行为描述（"Apply changes automatically, without review" / "Record everything to the audit trail"）。
 
 理由与 §23.3 相同：说明的作用是让用户读到一次，而不是让它永久占据版面。隐藏是可逆的，取消勾选就能重新读到全文，这也是它重新阻断 Enable 的同一个动作。
+
+## 26. 已知边界（2026-08-26）
+
+以下都是设计取舍的直接后果，不是缺陷。记在这里，是为了下次有人把它们当 bug"顺手修掉"之前先读到理由。
+
+### 26.1 隐藏规则对客户端是死路
+
+一旦某行进入 §8.2 的隐藏状态（结构非法、或与另一行 normalized key 重复），**任何 MCP 客户端都无法再触碰它**——`HIDDEN_RULE_CONFLICT` 同时拦住 upsert 和 remove。用户必须在 Burp UI 里修好或删掉。
+
+remove 看上去比 upsert 安全，因此"至少允许 AI 删掉隐藏行"是个反复会被提起的提议。**不要放宽**：隐藏行最常见的来源就是用户正在编辑、还没填完的一行，而"删掉用户正在编辑的行"是这里最坏的结果，比"用户多点两下"糟得多。inspect 也只返回 `hiddenInvalidRuleCount`、不返回内容（§8.2），所以客户端连自己要删什么都看不见——在这个前提下允许删除等于允许盲删。
+
+`HIDDEN_RULE_CONFLICT` 的 message 必须继续指明"先在 Burp 里修复或删除这些行"，因为那是唯一出路。
+
+### 26.2 propose 不能造出隐藏行（2026-08-26 修复）
+
+上一条只在隐藏行**由用户造成**时才是可接受的取舍。曾经有一段时间不是：逐条校验 upsert 时用 `SettingsSnapshot.ruleByKey` 查找，而那张索引只收录通过校验的行，于是被 patch 改成非法的规则查不到、循环跳过、"靠什么都没找到"通过校验，最后以 `APPLIED` + **空 diff** 落盘成一条隐藏行——客户端造出了一个自己收不了的场。
+
+其它非法字段从未暴露该缺口，因为 input schema 在上一层就挡掉了；`note` 的唯一约束是长度上限，成为第一个走到缺口的字段。
+
+修复固定为两层，改动任一层前先读本节：
+
+1. 逐条校验从**存储**中查找该 key 的行（`storedRuleWithKey`），那里才有 patch 自己的产物，与快照要不要用它无关；
+2. 兜底不变式：**一次 proposal 不得增加 `hiddenInvalidRuleCount`**。逐字段检查点不出名字的情况（host pattern 烂到无法 normalize、新引入的重复 key）由它覆盖。
+
+不变式的理由一句话即可记住：**一条落地即隐藏的规则，是一条 diff 没有描述的规则**，而 diff 是 §11 里 auto-apply 唯一的事后交代。
+
+### 26.3 rule `note` 不影响运行时，但进 revision
+
+`note`（§8.1 rule 字段）不跨 JNA、不进 `TransportConfig`、不参与匹配。它仍然进入 canonical document 和 revision，因为 `rules.json` 是三方合并的 base：备注若不进摘要，两条只差备注的行摘要相同，下一次合并会无冲突地丢掉其中一条。
+
+因此**升级到带 `note` 的版本会使既有配置的 revision 迁移一次**，客户端手上的 `expectedRevision` 会失效一次，重新 inspect 即可。同理，旧版 `RuleStore.parse` 的严格解析会把 `note` 当未知字段拒绝，**降级前必须先移除该字段**。

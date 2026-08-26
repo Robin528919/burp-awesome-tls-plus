@@ -18,6 +18,10 @@ The non-negotiable core is:
 
 - Embed a local MCP adapter in the Burp extension. Expose only `awesome_tls.settings.inspect` and `awesome_tls.settings.propose`. Never add an AI-callable apply/commit path, direct Preferences/file writes, or raw `TransportConfig` mutation.
 - **Auto-apply (ADR §22, amended by §24).** A Burp-only switch makes a valid `propose` commit immediately, returning `status: "APPLIED"`. It removes the review step and nothing else — every validation, the journal, the audit trail, the three-way merge and the undo all still run. It is off by default and confirmed when the user arms it; since §24 it is remembered across restarts. There is still no AI-callable way to apply, approve, reject or revert, and no way for a client to arm it.
+- **Hidden rules are a dead end for clients, on purpose (ADR §26).** `propose` handles ordinary
+  rules fine — add, change, remove all work. A row that is invalid or duplicated is refused for
+  upsert *and* remove; only the user can clear it in Burp. Do not "allow at least remove" as a
+  convenience, and do not weaken the rule that a proposal may never raise `hiddenInvalidRuleCount`.
 - **Only the listener is session-only (ADR §5, §23, §24).** The endpoint is closed on every start and only the user can open it. That is what bounds the unauthenticated surface — not the arming, and not the acknowledgement, both of which are stored. Do not restore either to session-only as a security tidy-up; read §23.3 and §24.3 first.
 - Put Swing and MCP behind one `SettingsControl` seam with shared validation, canonical revisioning, diffing, persistence, runtime-impact classification, and an immutable snapshot plus matching `RuleMatcher` published atomically.
 - Preserve the scalar-Preferences/domain-`rules.json` storage split, but add staged persistence, compensation, and startup recovery. Never publish a partially persisted runtime snapshot or silently use last-write-wins.

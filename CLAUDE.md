@@ -214,6 +214,13 @@ Things that will look like bugs and are not:
   `INDETERMINATE`. Collapsing the third into `ABSENT` turns a torn write into a silent rollback.
 - **Duplicated rule patterns disable every row claiming that key**, rather than the last one
   winning. This replaced the previous behaviour on purpose; see `RuleMatcher#checkDuplicatesNeverMatch`.
+- **A hidden rule is a dead end for any client, deliberately.** `propose` can add, change and
+  remove ordinary rules, but a row that is structurally invalid or duplicated is refused for both
+  upsert *and* remove (`HIDDEN_RULE_CONFLICT`) — only the user can fix or delete it in the tab.
+  Allowing remove looks safe and is not: the usual source of a hidden row is one the user is still
+  filling in, and inspect never returns hidden rows' contents, so a client would be deleting blind.
+  A proposal must also never *create* one — validation looks the upserted row up in storage, not
+  via `ruleByKey`, and a proposal that would raise `hiddenInvalidRuleCount` is refused. ADR §26.
 - **`RuleStore.parse` is strict.** A blank file, a null row or an unknown field is now an error,
   not "you have no rules" — because the same file is the base for a three-way merge, and an empty
   baseline silently discards every rule. `RuleStore.probe()` is the only read that may be used for
