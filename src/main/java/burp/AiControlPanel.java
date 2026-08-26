@@ -82,8 +82,34 @@ final class AiControlPanel {
     private final JLabel labelAuditState = new JLabel();
     private final JLabel labelAutoApplyState = new JLabel();
     private final JTextArea textGoServer = SettingsTab.descriptionText(" ");
-    private final JCheckBox checkBoxUnderstood =
-            new JCheckBox("I understand and accept that any process on this machine can read these values");
+    /** ADR-0001 section 4.2's disclosure, in full. Shown until acknowledged, and again on unticking. */
+    private static final String RISK_TEXT =
+            "The endpoint listens on 127.0.0.1 only, and has no authentication of any kind.\n\n"
+                    + "\u2022 Any process running as you on this machine can read your complete "
+                    + "settings through it, including external proxy credentials and the full hex "
+                    + "ClientHello.\n"
+                    + "\u2022 Any such process can submit a settings change.\n"
+                    + "\u2022 With \"Apply changes automatically\" off, nothing it submits takes "
+                    + "effect until you approve it here.\n"
+                    + "\u2022 Binding to loopback is not authentication. \"Risk acknowledged\" is "
+                    + "remembered across restarts; enabling the endpoint is not.\n\n"
+                    + "The audit trail is plain text and is not encrypted. It records complete "
+                    + "request and result values, credentials included, and can be read by anything "
+                    + "with access to the folder \u2014 other local users, backup software, and "
+                    + "sync clients. There is no delete button here; manage the files yourself.";
+
+    /**
+     * Lives in the toolbar rather than inside the warning, because the warning collapses once this
+     * is ticked and a control that hides itself cannot be unticked. The short label is only ever
+     * read after the full sentence has been on screen — it cannot be ticked before that.
+     */
+    private final JCheckBox checkBoxUnderstood = new JCheckBox("Risk acknowledged");
+
+    {
+        checkBoxUnderstood.setToolTipText(
+                "I understand and accept that any process on this machine can read these values. "
+                        + "Untick to read the full warning again.");
+    }
     private final JCheckBox checkBoxFullAudit = new JCheckBox("Record everything to the audit trail");
 
     /**
@@ -194,6 +220,7 @@ final class AiControlPanel {
         controls.add(buttonToggle);
         controls.add(labelStatus);
         controls.add(Box.createHorizontalStrut(16));
+        controls.add(checkBoxUnderstood);
         controls.add(checkBoxAutoApply);
         controls.add(checkBoxFullAudit);
         var openFolder = new JButton("Open audit folder");
@@ -206,29 +233,14 @@ final class AiControlPanel {
         panel.row(textGoServer);
 
         // The disclosure is unavoidable rather than something that scrolls past once during setup:
-        // it is in full until it has been acknowledged, and the checkbox that collapses it keeps
-        // naming the risk afterwards. Section 4.2's other requirements — audit state and auto-apply
-        // state at decision time — stay on screen either way.
+        // it is in full, and Enable stays dead, until it has been acknowledged. Then the whole box
+        // goes — its only remaining job would be to occupy the screen. Unticking in the toolbar
+        // brings it back, which is the same action that blocks Enable again.
         var warning = new Stack();
         warning.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createTitledBorder("Before you enable this"),
                 new EmptyBorder(4, 8, 8, 8)));
-        panelRiskDetail.row(SettingsTab.warningText(
-                "The endpoint listens on 127.0.0.1 only, and has no authentication of any kind.\n\n"
-                        + "• Any process running as you on this machine can read your complete "
-                        + "settings through it, including external proxy credentials and the full "
-                        + "hex ClientHello.\n"
-                        + "• Any such process can submit a settings change.\n"
-                        + "• With \"Apply changes automatically\" off, nothing it submits takes "
-                        + "effect until you approve it here.\n"
-                        + "• Binding to loopback is not authentication. Your acknowledgement is "
-                        + "remembered across restarts; enabling the endpoint is not.\n\n"
-                        + "The audit trail is plain text and is not encrypted. It records complete "
-                        + "request and result values, credentials included, and can be read by "
-                        + "anything with access to the folder — other local users, backup software, "
-                        + "and sync clients. There is no delete button here; manage the files "
-                        + "yourself."));
-        warning.row(panelRiskDetail);
+        warning.row(SettingsTab.warningText(RISK_TEXT));
         warning.row(Box.createVerticalStrut(6));
         // Section 4.2 also requires the enable-time warning to state whether full audit is on. It
         // used to appear only in the endpoint line, which reads "not listening" at exactly the
@@ -236,8 +248,6 @@ final class AiControlPanel {
         warning.row(labelAuditState);
         warning.row(Box.createVerticalStrut(4));
         warning.row(labelAutoApplyState);
-        warning.row(Box.createVerticalStrut(6));
-        warning.row(checkBoxUnderstood);
 
         panelSetup.setLayout(new BorderLayout(0, 4));
         var setupRows = new Stack();
@@ -677,9 +687,6 @@ final class AiControlPanel {
         // while nothing is listening.
         spinnerPort.setEnabled(!enabled);
         checkBoxUnderstood.setEnabled(!enabled);
-        // Collapse on the tick, not on the button. Reading it is what the tick asserts, so leaving
-        // the long form up until the listener starts just adds something to scroll past.
-        panelRiskDetail.setVisible(!checkBoxUnderstood.isSelected());
 
         var blocked = settings.control().blockedReason();
         if (blocked != null) {
@@ -709,8 +716,9 @@ final class AiControlPanel {
 
         // Setting up and reviewing never happen at the same moment, so they do not have to share
         // the window. While the listener is down the panel is a decision; while it is up it is a
-        // review surface, and the diff needs the room.
-        panelSetup.setVisible(!running);
+        // review surface, and the diff needs the room. Acknowledging ends the decision early, so
+        // it collapses on the tick too rather than waiting for the button.
+        panelSetup.setVisible(!running && !checkBoxUnderstood.isSelected());
     }
 
     /**
