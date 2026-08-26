@@ -230,6 +230,7 @@ public final class AiSettingsService {
         json.addProperty("fingerprint", rule.fingerprint);
         json.addProperty("hexClientHello", rule.hexClientHello);
         json.addProperty("externalProxyUrl", rule.externalProxyUrl);
+        json.addProperty("note", rule.note);
         if (rule.httpTimeout == null) {
             json.add("httpTimeout", com.google.gson.JsonNull.INSTANCE);
         } else {

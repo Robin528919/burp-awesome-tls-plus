@@ -42,16 +42,32 @@ public class FingerprintRule {
      */
     public boolean enabled = true;
 
+    /**
+     * Free-text note for whoever has to read this row later: where the capture came from, which
+     * app version, why this host needs its own rule.
+     * <p>
+     * Never reaches the Go side and never affects matching. It is still part of the canonical
+     * document and therefore of the settings revision, because it lives in the same file the
+     * three-way merge works on — a note that did not change the revision would be silently
+     * dropped by the next merge.
+     */
+    public String note = "";
+
     public FingerprintRule() {
     }
 
     public FingerprintRule(String hostPattern, String fingerprint, String hexClientHello, String externalProxyUrl, Integer httpTimeout, boolean enabled) {
+        this(hostPattern, fingerprint, hexClientHello, externalProxyUrl, httpTimeout, enabled, "");
+    }
+
+    public FingerprintRule(String hostPattern, String fingerprint, String hexClientHello, String externalProxyUrl, Integer httpTimeout, boolean enabled, String note) {
         this.hostPattern = hostPattern;
         this.fingerprint = fingerprint;
         this.hexClientHello = hexClientHello;
         this.externalProxyUrl = externalProxyUrl;
         this.httpTimeout = httpTimeout;
         this.enabled = enabled;
+        this.note = note;
     }
 
     /**
@@ -93,7 +109,8 @@ public class FingerprintRule {
                 orEmpty(hexClientHello).trim(),
                 orEmpty(externalProxyUrl).trim(),
                 httpTimeout,
-                enabled
+                enabled,
+                orEmpty(note).trim()
         );
     }
 
@@ -112,7 +129,8 @@ public class FingerprintRule {
                 orEmpty(hexClientHello),
                 orEmpty(externalProxyUrl),
                 httpTimeout,
-                enabled
+                enabled,
+                orEmpty(note)
         );
     }
 
@@ -127,6 +145,7 @@ public class FingerprintRule {
             case "externalProxyUrl" -> externalProxyUrl;
             case "httpTimeout" -> httpTimeout;
             case "enabled" -> enabled;
+            case "note" -> note;
             default -> null;
         };
     }
@@ -135,7 +154,8 @@ public class FingerprintRule {
      * Every known field, in the order the canonical document and the diff present them.
      */
     public static final java.util.List<String> FIELDS = java.util.List.of(
-            "hostPattern", "enabled", "fingerprint", "hexClientHello", "externalProxyUrl", "httpTimeout");
+            "hostPattern", "enabled", "fingerprint", "hexClientHello", "externalProxyUrl", "httpTimeout",
+            "note");
 
     private static String orEmpty(String s) {
         return s == null ? "" : s;

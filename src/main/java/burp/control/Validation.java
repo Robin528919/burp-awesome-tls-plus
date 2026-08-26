@@ -215,8 +215,24 @@ public final class Validation {
         addRule(problems, key, "externalProxyUrl",
                 prefixed("External proxy URL", ProxyUrl.problem(value.externalProxyUrl)), "invalid_proxy_url");
         addRule(problems, key, "httpTimeout", timeoutProblem(value.httpTimeout, true), "timeout_out_of_range");
+        addRule(problems, key, "note", noteProblem(value.note), "note_too_long");
 
         return List.copyOf(problems);
+    }
+
+    /**
+     * The note is free text, so the only thing to check is that it stays a note. The cap is here
+     * rather than in the UI because the same field arrives over MCP, and an unbounded string in a
+     * file that is read, hashed and three-way merged on every commit is a throughput problem
+     * disguised as a comment.
+     */
+    static final int NOTE_MAX = 500;
+
+    private static String noteProblem(String note) {
+        if (note != null && note.length() > NOTE_MAX) {
+            return "Note is " + note.length() + " characters; the limit is " + NOTE_MAX + ".";
+        }
+        return null;
     }
 
     /**

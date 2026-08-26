@@ -57,7 +57,8 @@ public final class SettingsPatch {
 
     /** Fields a rule upsert may name. */
     static final Set<String> RULE_FIELDS = Set.of(
-            "hostPattern", "enabled", "fingerprint", "hexClientHello", "externalProxyUrl", "httpTimeout");
+            "hostPattern", "enabled", "fingerprint", "hexClientHello", "externalProxyUrl", "httpTimeout",
+            "note");
 
     /**
      * Settings that only exist globally.
@@ -495,6 +496,7 @@ public final class SettingsPatch {
                 case "fingerprint" -> updated.fingerprint = value == null ? "" : (String) value;
                 case "hexClientHello" -> updated.hexClientHello = value == null ? "" : (String) value;
                 case "externalProxyUrl" -> updated.externalProxyUrl = value == null ? "" : (String) value;
+                case "note" -> updated.note = value == null ? "" : (String) value;
                 case "httpTimeout" -> updated.httpTimeout = (Integer) value;
                 default -> throw new IllegalStateException("unreachable: unknown rule field " + entry.getKey());
             }

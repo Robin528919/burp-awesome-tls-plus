@@ -59,7 +59,8 @@ public final class RuleStore {
 
     /** The only keys a rule object may carry. */
     private static final Set<String> RULE_FIELDS = Set.of(
-            "hostPattern", "fingerprint", "hexClientHello", "externalProxyUrl", "httpTimeout", "enabled");
+            "hostPattern", "fingerprint", "hexClientHello", "externalProxyUrl", "httpTimeout", "enabled",
+            "note");
 
     private final Path file;
     private final Consumer<String> errorLog;
@@ -339,6 +340,7 @@ public final class RuleStore {
         rule.fingerprint = stringOf(object, "fingerprint", at);
         rule.hexClientHello = stringOf(object, "hexClientHello", at);
         rule.externalProxyUrl = stringOf(object, "externalProxyUrl", at);
+        rule.note = stringOf(object, "note", at);
 
         if (object.has("httpTimeout") && !object.get("httpTimeout").isJsonNull()) {
             rule.httpTimeout = intOf(object.get("httpTimeout"), at + "'s httpTimeout");
@@ -516,12 +518,14 @@ public final class RuleStore {
         check(!store.exists(), "a missing file does not report as existing");
 
         var rules = List.of(
-                new FingerprintRule("example.com", "chrome", "", "", 60, true),
+                new FingerprintRule("example.com", "chrome", "", "", 60, true, "from a 12.13 capture"),
                 new FingerprintRule("*.api.example.com", "", "aabb", "socks5://127.0.0.1:1080", null, false));
         store.save(rules);
 
         var loaded = ((Probe.Loaded) store.probe()).rules();
         check(loaded.size() == 2, "both rules survive a round trip");
+        check(loaded.get(0).note.equals("from a 12.13 capture") && loaded.get(1).note.isEmpty(),
+                "a note survives a round trip, and an absent one reads as empty");
         check(loaded.get(0).hostPattern.equals("example.com") && loaded.get(0).httpTimeout == 60,
                 "scalar fields survive a round trip");
         check(loaded.get(1).hexClientHello.equals("aabb") && !loaded.get(1).enabled,

@@ -190,6 +190,7 @@ public final class SettingsSnapshot {
         json.addProperty("fingerprint", rule.fingerprint);
         json.addProperty("hexClientHello", rule.hexClientHello);
         json.addProperty("externalProxyUrl", rule.externalProxyUrl);
+        json.addProperty("note", rule.note);
         if (rule.httpTimeout == null) {
             json.add("httpTimeout", com.google.gson.JsonNull.INSTANCE);
         } else {
@@ -209,7 +210,8 @@ public final class SettingsSnapshot {
                 normalized.hexClientHello.toLowerCase(java.util.Locale.ROOT),
                 normalized.externalProxyUrl,
                 normalized.httpTimeout,
-                normalized.enabled);
+                normalized.enabled,
+                normalized.note);
     }
 
     /**
@@ -240,6 +242,16 @@ public final class SettingsSnapshot {
         check(one.validRules().get(0).hexClientHello.equals("aabb"), "hex is lowercased");
         check(one.storedRules().get(0).hostPattern.equals("Example.COM"), "the stored spelling is untouched");
         check(one.matcher().match("EXAMPLE.com") != null, "the matcher was built from it");
+
+        // The note is the one rule field with no runtime effect, which is exactly why it is easy to
+        // leave out of the canonical document. If it ever is, two rows that differ only by their
+        // note hash alike and the next three-way merge drops one of the notes without a conflict.
+        var noted = SettingsSnapshot.of(BusinessSettings.defaults(),
+                List.of(new FingerprintRule("Example.COM", "chrome", "AABB", "", 60, true, "from a 12.13 capture")));
+        check(!noted.revision().equals(one.revision()), "a note changes the revision");
+        check(noted.validRules().get(0).note.equals("from a 12.13 capture"), "the note survives canonicalization");
+        check(noted.matcher().match("example.com").hexClientHello.equals("aabb"),
+                "and changes nothing about matching");
 
         // Both wildcard spellings are one rule, so writing both hides both.
         var dupes = SettingsSnapshot.of(BusinessSettings.defaults(), List.of(

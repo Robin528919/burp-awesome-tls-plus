@@ -152,6 +152,7 @@ public final class ThreeWayMerge {
             case "fingerprint" -> rule.fingerprint = value == null ? "" : (String) value;
             case "hexClientHello" -> rule.hexClientHello = value == null ? "" : (String) value;
             case "externalProxyUrl" -> rule.externalProxyUrl = value == null ? "" : (String) value;
+            case "note" -> rule.note = value == null ? "" : (String) value;
             case "httpTimeout" -> rule.httpTimeout = (Integer) value;
             default -> throw new IllegalStateException("unreachable: unknown rule field " + field);
         }
@@ -234,6 +235,7 @@ public final class ThreeWayMerge {
             json.addProperty("fingerprint", rule.fingerprint);
             json.addProperty("hexClientHello", rule.hexClientHello);
             json.addProperty("externalProxyUrl", rule.externalProxyUrl);
+            json.addProperty("note", rule.note);
             if (rule.httpTimeout == null) {
                 json.add("httpTimeout", com.google.gson.JsonNull.INSTANCE);
             } else {

@@ -453,6 +453,7 @@ public final class SettingsControl {
             rule.fingerprint = object.get("fingerprint").getAsString();
             rule.hexClientHello = object.get("hexClientHello").getAsString();
             rule.externalProxyUrl = object.get("externalProxyUrl").getAsString();
+            rule.note = object.get("note").getAsString();
             rule.httpTimeout = object.get("httpTimeout").isJsonNull()
                     ? null : object.get("httpTimeout").getAsInt();
             rules.add(rule);

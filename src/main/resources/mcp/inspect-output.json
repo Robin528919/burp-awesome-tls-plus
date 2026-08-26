@@ -355,7 +355,8 @@
         "fingerprint",
         "hexClientHello",
         "externalProxyUrl",
-        "httpTimeout"
+        "httpTimeout",
+        "note"
       ],
       "properties": {
         "hostPattern": {
@@ -386,6 +387,10 @@
               "type": "null"
             }
           ]
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500
         }
       }
     },

@@ -444,6 +444,7 @@ public class SettingsTab {
         setColumnWidth(table, RuleTableModel.COL_HEX, 260, 140);
         setColumnWidth(table, RuleTableModel.COL_PROXY, 240, 140);
         capColumnWidth(table, RuleTableModel.COL_TIMEOUT, 90, 70, 120);
+        setColumnWidth(table, RuleTableModel.COL_NOTE, 220, 120);
 
         return table;
     }
@@ -896,6 +897,12 @@ public class SettingsTab {
      * overwrite their draft or be overwritten by it. Reporting the draft and refusing is the only
      * option that does not lose someone's work.
      */
+    /**
+     * True from the moment a foreign commit lands until the refresh it queued has run.
+     */
+    private final java.util.concurrent.atomic.AtomicBoolean refreshQueued =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
     List<String> dirtyReasons() {
         var reasons = new java.util.ArrayList<String>();
         if (ruleTable.getCellEditor() != null) {
@@ -904,7 +911,12 @@ public class SettingsTab {
         if (autoSaveTimer.isRunning()) {
             reasons.add("PENDING_AUTOSAVE");
         }
-        if (!formSettings().sameAs(settings.snapshot().settings())) {
+        // Not while a commit's own refresh is still queued. The form is stale then, not edited —
+        // and reporting that as a draft made a settings change block the very next one, which is
+        // exactly the loop auto-apply exists for. A real draft is still caught: it can only be
+        // made on the EDT, which is where the queued refresh runs, and the two reasons above
+        // cover the cases where that refresh declines to overwrite it.
+        if (!refreshQueued.get() && !formSettings().sameAs(settings.snapshot().settings())) {
             reasons.add("UNSAVED_UI_DRAFT");
         }
         return List.copyOf(reasons);
@@ -926,14 +938,21 @@ public class SettingsTab {
             return;
         }
 
+        // Set before queueing, and cleared by the queued work itself: between these two points the
+        // form holds the previous revision's values through no fault of the user.
+        refreshQueued.set(true);
         SwingUtilities.invokeLater(() -> {
-            if (ruleTable.getCellEditor() != null || autoSaveTimer.isRunning()) {
-                // A refusal to overwrite a draft; the change is committed either way, and the tab
-                // catches up once the draft is resolved.
-                return;
+            try {
+                if (ruleTable.getCellEditor() != null || autoSaveTimer.isRunning()) {
+                    // A refusal to overwrite a draft; the change is committed either way, and the
+                    // tab catches up once the draft is resolved.
+                    return;
+                }
+                load();
+                ruleTable.repaint();
+            } finally {
+                refreshQueued.set(false);
             }
-            load();
-            ruleTable.repaint();
             if (aiControlPanel != null) {
                 aiControlPanel.refresh();
             }
@@ -1204,8 +1223,10 @@ public class SettingsTab {
         static final int COL_HEX = 3;
         static final int COL_PROXY = 4;
         static final int COL_TIMEOUT = 5;
+        static final int COL_NOTE = 6;
 
-        static final String[] COLUMNS = {"On", "Host pattern", "Fingerprint", "Hex ClientHello", "External proxy", "Timeout"};
+        static final String[] COLUMNS = {"On", "Host pattern", "Fingerprint", "Hex ClientHello", "External proxy",
+                "Timeout", "Note"};
 
         /**
          * Shown both as a header tooltip and in the legend above the table.
@@ -1220,6 +1241,9 @@ public class SettingsTab {
                         + "Empty inherits the Defaults tab.",
                 "Upstream proxy for this host, e.g. socks5://127.0.0.1:1080. Empty inherits the Defaults tab.",
                 "Connection timeout in seconds, 1 to 3600. Empty inherits the Defaults tab.",
+                "Free text for whoever reads this row later \u2014 where the capture came from, which app version, "
+                        + "why this host needs its own rule. Never sent anywhere; it only has to mean something to "
+                        + "you.",
         };
 
         private final List<FingerprintRule> rules = new ArrayList<>();
@@ -1356,6 +1380,7 @@ public class SettingsTab {
                 case COL_HEX -> rule.hexClientHello;
                 case COL_PROXY -> rule.externalProxyUrl;
                 case COL_TIMEOUT -> timeouts.get(row);
+                case COL_NOTE -> rule.note;
                 default -> "";
             };
         }
@@ -1370,6 +1395,7 @@ public class SettingsTab {
                 case COL_HEX -> rule.hexClientHello = text(value);
                 case COL_PROXY -> rule.externalProxyUrl = text(value);
                 case COL_TIMEOUT -> timeouts.set(row, text(value));
+                case COL_NOTE -> rule.note = text(value);
                 default -> {
                 }
             }
