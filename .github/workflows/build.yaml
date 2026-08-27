@@ -28,7 +28,10 @@ jobs:
       - name: Setup Gradle
         uses: gradle/gradle-build-action@v3
       - name: Build with Gradle
-        run: ./gradlew buildJar
+        # checkAll, not just buildJar: every check in this repository is an executable main
+        # method, so a build-only CI compiles them and runs none of them. noNetworkCheck needs
+        # a JDK 18+ for its resolver SPI and skips itself here with an explanation.
+        run: ./gradlew checkAll buildJar
       - name: List binaries
         run: |
           ls -lh ./src/main/resources/linux-x86-64/server.so
