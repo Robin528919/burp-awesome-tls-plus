@@ -15,6 +15,10 @@ press **Enable** (off by default, and never comes back on its own after a Burp r
 register the endpoint with their client.
 The tab's *Connect a client* section copies the exact command.
 
+If the tools stay invisible *after* registering, the client's MCP revision is probably older than
+this endpoint accepts — see [§7](#7-no-mcp-client-drive-it-over-plain-http), which needs no MCP
+support at all.
+
 Exactly two tools exist, on `http://127.0.0.1:8885/mcp` (port configurable, loopback only, **no
 authentication** — anything running as that user can read the settings through it):
 
@@ -145,18 +149,92 @@ copy, so use §4 whenever the fingerprint needs to be stored, shared, or scoped 
 | `RULE_FILE_INVALID` | `rules.json` is unparseable; nothing was touched. Do not attempt a repair patch. |
 | `CURSOR_STALE` | Settings changed mid-pagination. Start the inspect over. |
 
-## 7. Raw HTTP (debugging only)
+## 7. No MCP client? Drive it over plain HTTP
 
-A registered MCP client handles this for you. Curling by hand, every one of these is enforced
-separately, and each has its own refusal — a missing one is never ignored:
+Not a debugging aside — this is the supported path for any agent whose MCP implementation this
+endpoint refuses, and it can do everything the two tools can.
+
+The endpoint speaks MCP `2026-07-28` and only that. A client still on `2025-11-25` or earlier, or
+one that opens with an `initialize` handshake, is answered with `400` and
+`{"error":{"code":-32022,...,"supported":["2026-07-28"]}}`. That is the handshake being refused;
+re-registering the server will not change it.
+
+**The authorization model is exactly the same here.** `propose` still only records a proposal, and
+only the user can apply it in the Burp UI. This is a different transport, not a way around review.
+
+Five headers, each enforced separately, each with its own refusal — a missing one is never
+ignored:
 
 | Header | Value | If wrong |
 | --- | --- | --- |
 | `Content-Type` | `application/json` | 415 |
 | `Accept` | must contain **both** `application/json` and `text/event-stream` | 406 |
-| `MCP-Protocol-Version` | `2026-07-28`, exactly | 400 |
-| `Mcp-Method` | the JSON-RPC `method`, verbatim (`tools/list`, `tools/call`) | 400, `-32020` |
-| `Mcp-Name` | on `tools/call`, the tool name — must equal `params.name` | 400, `-32020` |
-| `Origin` | must be **absent**; the value is never even compared | 403 |
+| `MCP-Protocol-Version` | `2026-07-28`, exactly | 400, `-32022` |
+| `Mcp-Method` | the JSON-RPC `method`, verbatim | 400, `-32020` |
+| `Mcp-Name` | `tools/call` only; must equal `params.name` | 400, `-32020` |
 
-`Host` must be `127.0.0.1:<port>`.
+`Host` must be `127.0.0.1:<port>`. An `Origin` header of *any* value is `403` — the value is
+never even compared, which is why browser-based clients cannot use this endpoint at all.
+`params._meta` is **not** required. Limits: 30 requests / 60 s, 2 concurrent.
+
+### List the tools
+
+```bash
+curl -sS http://127.0.0.1:8885/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: tools/list' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+### Inspect
+
+Same envelope, plus `Mcp-Name`. The tool's own arguments go in `params.arguments`:
+
+```bash
+curl -sS http://127.0.0.1:8885/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: tools/call' \
+  -H 'Mcp-Name: awesome_tls.settings.inspect' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+        "name":"awesome_tls.settings.inspect",
+        "arguments":{"schemaVersion":"awesome_tls.settings.v1",
+                     "sections":["settings","rules","runtime"]}}}'
+```
+
+The tool's own JSON is a **string** inside `result.content[0].text`, so it needs decoding twice.
+To pull just the revision (which `propose` requires verbatim):
+
+```bash
+... | python3 -c 'import json,sys; print(json.loads(json.load(sys.stdin)["result"]["content"][0]["text"])["revision"])'
+```
+
+### Propose
+
+```bash
+curl -sS http://127.0.0.1:8885/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: tools/call' \
+  -H 'Mcp-Name: awesome_tls.settings.propose' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+        "name":"awesome_tls.settings.propose",
+        "arguments":{"schemaVersion":"awesome_tls.settings.v1",
+                     "expectedRevision":"sha256:PASTE_FROM_INSPECT",
+                     "requestId":"chrome-for-example-com-1",
+                     "summary":"Use chrome_146 for *.example.com",
+                     "patch":{"domainRules":{"upsert":[
+                        {"hostPattern":"*.example.com","fingerprint":"chrome_146"}]}}}}}'
+```
+
+Everything in §3 still applies — `expectedRevision` is compare-and-set, `requestId` is the
+idempotency key, and the acknowledgements are mandatory whenever they apply. Then stop: tell the
+user to open **Awesome TLS → AI Control** and approve it. Do not poll.
+
+A transport-level refusal (`-32022`, `-32020`, 403, 406, 415) is a bug in the request you just
+built. A business refusal (`REVISION_CONFLICT`, `DIRTY_UI`, ...) is §6 and means what it means
+there, whichever transport it arrived over.

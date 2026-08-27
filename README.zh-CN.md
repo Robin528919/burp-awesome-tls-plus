@@ -114,22 +114,43 @@
    }
    ```
 
+   OpenCode 用的键与上面完全不同，贴上面那份它会静默忽略。它的 `opencode.json` 要的是：
+
+   ```json
+   {
+     "mcp": {
+       "awesome-tls": {
+         "type": "remote",
+         "url": "http://127.0.0.1:8885/mcp",
+         "enabled": true
+       }
+     }
+   }
+   ```
+
    这两条命令都是**全局注册**，对所有项目生效。去掉 `--scope user` 则只对当前项目生效。
    全局注册意味着：只要你在 Burp 里启用了这个端点，任何会话的客户端都能连上它。
+
+   **注册成功不等于连得上。** 这个端点只说 MCP `2026-07-28`：Codex Desktop 与 Codex CLI 是它的
+   开发对标客户端，同版本的其他客户端是 best-effort，而仍停留在 `2025-11-25` 或更早的客户端会收到
+   HTTP 400 与 `unsupported protocol version` —— 那是端点在拒绝握手，不是上面的命令写错了。
+   这些客户端并没有被排除在外：五个 header 的普通 POST 就能用到完整端点，授权边界完全相同，
+   见下面 skill 的第 7 节。
 3. 可选：装上配套的 **skill**。注册端点只告诉客户端「有两个工具」，而指纹和 hex ClientHello 谁压谁、
    提议必须带哪些 acknowledgement、真实 ClientHello 怎么抓出来，都要靠这份 skill。标签页里同样有
    一键复制：
 
    ```sh
-   mkdir -p ~/.claude/skills/awesome-tls-mcp && curl -fsSL -o ~/.claude/skills/awesome-tls-mcp/SKILL.md https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md
+   mkdir -p ~/.claude/skills/awesome-tls-mcp ~/.agents/skills/awesome-tls-mcp && curl -fsSL -o ~/.claude/skills/awesome-tls-mcp/SKILL.md https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md && cp ~/.claude/skills/awesome-tls-mcp/SKILL.md ~/.agents/skills/awesome-tls-mcp/SKILL.md
    ```
 
    ```sh
-   mkdir -p ~/.codex && curl -fsSL https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md >> ~/.codex/AGENTS.md
+   mkdir -p ~/.codex/skills/awesome-tls-mcp && curl -fsSL -o ~/.codex/skills/awesome-tls-mcp/SKILL.md https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md
    ```
 
-   skill 是 Claude Code 的机制，Codex 读的是纯指令文件，所以同一份内容直接追加进它的 `AGENTS.md`，
-   而不是再维护第二份文档。第二条命令跑两次会追加两份，要更新请先删掉旧的那一节。装不装都可以，
+   skill 不是某一家的格式，而是一份 `SKILL.md` 放进约定目录：`~/.claude/skills` 与 `~/.agents/skills`
+   会被 Claude Code、OpenCode、Cursor、Copilot、Gemini CLI 一并扫描，Codex 另有 `~/.codex/skills`。
+   所以这里是两条命令，而不是每个客户端一条。两条都是覆盖写入，重复执行即原地更新。装不装都可以，
    它不会改变 Burp 里的任何行为，原文见
    [`skills/awesome-tls-mcp/SKILL.md`](https://github.com/Robin528919/burp-awesome-tls-plus/blob/main/skills/awesome-tls-mcp/SKILL.md)。
 4. 有提议到达时，标签页上会出现一个圆点。它不会抢焦点，也不会自动弹窗。

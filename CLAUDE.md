@@ -57,7 +57,7 @@ and run together:
 
 That runs three groups:
 
-- **`selfCheck`** — sixteen `main`-method self-checks. Each lives in the class it exercises and is
+- **`selfCheck`** — seventeen `main`-method self-checks. Each lives in the class it exercises and is
   documented there. The load-bearing ones are `burp.control.SettingsControlCheck` (crash and
   fault injection across the two-store commit), `burp.control.AiSettingsServiceCheck` (what an AI
   may and may not do), and `burp.control.McpServerCheck` (the full HTTP/JSON-RPC contract, against
@@ -78,7 +78,9 @@ Everything else is verified manually: load the jar into Burp and check the resul
 fingerprint against `tls.peet.ws` or `scrapfly.io/web-scraping-tools/http2-fingerprint`.
 
 Not covered by any of the above, and required by ADR-0001 section 17.3 before release: the same
-MCP flow driven by Codex Desktop and Codex CLI inside a running Burp.
+MCP flow driven by Codex Desktop and Codex CLI inside a running Burp. Section 17.3's other
+requirement — that the `curl` commands in `skills/awesome-tls-mcp/SKILL.md` section 7 run exactly
+as copied — needs no client and was checked on 2026-08-26.
 
 ## Architecture
 
@@ -235,6 +237,16 @@ Things that will look like bugs and are not:
   the listener, and re-collecting the same consent produced no new consent.
 - **The request path uses the Go listener's actual address**, via `Settings#activeSpoofProxyAddress`,
   not the configured one. Changing the address does not move a running server.
+- **The endpoint speaks MCP `2026-07-28` and nothing else, so most clients cannot connect** — a
+  client on `2025-11-25` or earlier gets 400/`-32022` at the handshake. That is the design (ADR
+  §16.1), and answering `initialize` too was evaluated and rejected in §16.1.1. Those clients reach
+  the same capability through five headers on a plain POST, documented in `SKILL.md` section 7, with
+  the same approval boundary. Adding a registration button for a client does not make it connect.
+- **Skills are distributed by path, not by client.** `~/.claude/skills/` and `~/.agents/skills/` are
+  an open standard read by Claude Code, OpenCode, Cursor, Copilot and Gemini CLI alike; Codex adds
+  `~/.codex/skills/`. Three paths cover the whole field, so do not add a button per client — and do
+  not restore the old Codex behaviour of appending the skill to `~/.codex/AGENTS.md`, which turned
+  reference material into a permanent global instruction and duplicated it on every run (ADR §27.1).
 
 ## Non-obvious constraints
 

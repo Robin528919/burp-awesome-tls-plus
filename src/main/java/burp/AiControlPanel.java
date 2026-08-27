@@ -1,6 +1,8 @@
 package burp;
 
 import burp.control.AiSettingsService;
+import burp.control.ClientSnippets;
+import burp.control.ClientSnippets.Kind;
 import burp.control.McpServer;
 import burp.control.Proposal;
 import burp.control.Wire;
@@ -340,10 +342,11 @@ final class AiControlPanel {
                 new EmptyBorder(4, 8, 8, 8)));
 
         var buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
-        buttons.add(copyButton("Copy endpoint URL", Snippet.ENDPOINT));
-        buttons.add(copyButton("Claude Code", Snippet.CLAUDE_CODE));
-        buttons.add(copyButton("Codex", Snippet.CODEX));
-        buttons.add(copyButton("JSON config", Snippet.JSON));
+        buttons.add(copyButton("Copy endpoint URL", Kind.ENDPOINT));
+        buttons.add(copyButton("Claude Code", Kind.CLAUDE_CODE));
+        buttons.add(copyButton("Codex", Kind.CODEX));
+        buttons.add(copyButton("JSON config", Kind.JSON));
+        buttons.add(copyButton("JSON config: OpenCode", Kind.JSON_OPENCODE));
         buttons.add(labelCopied);
         panel.row(buttons);
 
@@ -353,26 +356,37 @@ final class AiControlPanel {
                         + "project. Drop \"--scope user\" to keep it to the current project instead. "
                         + "A globally registered client can reach this endpoint from any session, "
                         + "whenever it is enabled here."));
+        panel.row(SettingsTab.descriptionText(
+                "Registering is not the same as connecting. This endpoint speaks MCP "
+                        + McpServer.PROTOCOL_VERSION + " and nothing else: Codex Desktop and Codex "
+                        + "CLI are what it is built against, any other client on that revision "
+                        + "is best-effort, and a client still on 2025-11-25 or earlier is answered "
+                        + "with HTTP 400 and \"unsupported protocol version\" \u2014 the endpoint "
+                        + "refusing the handshake, not a mistake in the command above. Those "
+                        + "clients are not stuck: the skill below carries the plain HTTP requests, "
+                        + "which need no MCP support at all and can do everything the tools can."));
 
         var skillButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
-        skillButtons.add(copyButton("Install skill: Claude Code", Snippet.CLAUDE_SKILL));
-        skillButtons.add(copyButton("Install skill: Codex", Snippet.CODEX_SKILL));
+        skillButtons.add(copyButton("Install skill (all agents)", Kind.SKILL));
+        skillButtons.add(copyButton("Install skill: Codex", Kind.CODEX_SKILL));
         panel.row(skillButtons);
         panel.row(SettingsTab.descriptionText(
                 "Registering the endpoint only tells a client that two tools exist. These install "
                         + "the usage guide alongside it \u2014 which of a fingerprint and a hex "
-                        + "ClientHello wins, the acknowledgements a proposal has to carry, and how "
-                        + "to capture a ClientHello \u2014 so the client does not have to guess. "
-                        + "Optional, and it changes nothing in Burp. The Codex line appends to "
-                        + "AGENTS.md, so running it twice leaves two copies."));
+                        + "ClientHello wins, the acknowledgements a proposal has to carry, how to "
+                        + "capture a ClientHello, and the raw HTTP requests for clients that "
+                        + "cannot speak this MCP revision. Optional, and it changes nothing in "
+                        + "Burp. The first line writes the two paths every agent scans "
+                        + "(~/.claude/skills and ~/.agents/skills), which is what Claude Code, "
+                        + "OpenCode, Cursor, Copilot and Gemini CLI all read; Codex has its own "
+                        + "~/.codex/skills. Both lines are safe to run twice."));
         return panel;
     }
 
-    private enum Snippet {ENDPOINT, CLAUDE_CODE, CODEX, JSON, CLAUDE_SKILL, CODEX_SKILL}
+    /** The snippets themselves live in {@link ClientSnippets}, which has a self-check. */
+    private Kind lastCopied = Kind.ENDPOINT;
 
-    private Snippet lastCopied = Snippet.ENDPOINT;
-
-    private JButton copyButton(String label, Snippet snippet) {
+    private JButton copyButton(String label, Kind snippet) {
         var button = new JButton(label);
         button.addActionListener(e -> {
             var text = snippetFor(snippet);
@@ -388,7 +402,7 @@ final class AiControlPanel {
         return button;
     }
 
-    private void showConnectSnippet(Snippet snippet) {
+    private void showConnectSnippet(Kind snippet) {
         textConnect.setText(snippetFor(snippet));
     }
 
@@ -404,32 +418,9 @@ final class AiControlPanel {
         return "http://" + McpServer.BIND_HOST + ":" + spinnerPort.getValue() + McpServer.PATH;
     }
 
-    private String snippetFor(Snippet snippet) {
-        var endpoint = currentEndpoint();
-        return switch (snippet) {
-            case ENDPOINT -> endpoint;
-            case CLAUDE_CODE -> "claude mcp add --transport http --scope user "
-                    + SERVER_NAME + " " + endpoint;
-            case CODEX -> "codex mcp add " + SERVER_NAME + " --url " + endpoint;
-            // The shape most clients that are configured by hand expect. Keys vary between
-            // clients, so this is a starting point rather than a guarantee.
-            case JSON -> "{\n"
-                    + "  \"mcpServers\": {\n"
-                    + "    \"" + SERVER_NAME + "\": {\n"
-                    + "      \"type\": \"http\",\n"
-                    + "      \"url\": \"" + endpoint + "\"\n"
-                    + "    }\n"
-                    + "  }\n"
-                    + "}";
-            // Skills are a Claude Code concept; Codex reads plain instructions, so the same file
-            // is appended to its AGENTS.md rather than translated into a second document.
-            case CLAUDE_SKILL -> "mkdir -p ~/.claude/skills/awesome-tls-mcp && curl -fsSL -o "
-                    + "~/.claude/skills/awesome-tls-mcp/SKILL.md " + SKILL_URL;
-            case CODEX_SKILL -> "mkdir -p ~/.codex && curl -fsSL " + SKILL_URL
-                    + " >> ~/.codex/AGENTS.md";
-        };
+    private String snippetFor(Kind snippet) {
+        return ClientSnippets.of(snippet, SERVER_NAME, currentEndpoint(), SKILL_URL);
     }
-
 
     private JComponent buildProposalSection() {
         var proposal = new JPanel(new BorderLayout(0, 6));

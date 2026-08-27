@@ -1,6 +1,6 @@
 # ADR-0001：通过内嵌 MCP 实现 AI Settings Control
 
-- 状态：Accepted / Locked（2026-08-25 经用户明确批准修订一次，见 §22）
+- 状态：Accepted / Locked（经用户明确批准修订五次，见 §22–§27）
 - 实现状态：Implemented（2026-08-25）。除第 17.3 节要求的 Codex Desktop / Codex CLI 真实 Burp E2E 外，本文锁定的行为均已实现并有可复核的自动检查；详见 §21 实现记录
 - 日期：2026-08-25
 - 范围：Burp 扩展内的设置查看、AI 修改提议、Burp 本地审批及其运行保障
@@ -10,7 +10,7 @@
 
 在 Burp 扩展进程内嵌一个仅监听本机回环地址的 MCP Streamable HTTP adapter，并在其后建立唯一的 `SettingsControl` 模块。AI 只能查看设置和提交修改提议；用户只能在 Burp UI 中批准、拒绝或撤销，AI 永远不能直接应用设置。
 
-首版是面向所有扩展用户的正式功能，但运行模型是单个 Burp 实例、单个本地用户。首要验证客户端是 Codex Desktop 和 Codex CLI；其他符合 MCP `2026-07-28` 的原生客户端仅提供 best-effort 兼容。浏览器型客户端明确不支持。
+首版是面向所有扩展用户的正式功能，但运行模型是单个 Burp 实例、单个本地用户。首要验证客户端是 Codex Desktop 和 Codex CLI；其他符合 MCP `2026-07-28` 的原生客户端仅提供 best-effort 兼容。不符合该版本的客户端不因此被排除：它们通过 §16.1.1 的 client-agnostic HTTP 通道使用本功能，能力等价、授权边界不变。浏览器型客户端明确不支持（任何 `Origin` 一律 403，见 §5）。
 
 本设计接受一个显式风险：MCP 不使用 Token、OAuth 或其他认证，并默认向调用方返回完整代理凭据和完整 Hex ClientHello。绑定回环地址并不代表秘密不会泄露给本机其他进程，因此每次启用时必须向用户显示这一事实。
 
@@ -590,7 +590,7 @@ Host/Origin 拒绝、超大 body 或无法解析的任意协议载荷只记录�
 - POST-only stateless transport；
 - `server/discover`；
 - `tools/list` 与 `tools/call`；
-- 每个 request 的 `params._meta` 至少包含 `io.modelcontextprotocol/protocolVersion` 与 `io.modelcontextprotocol/clientCapabilities`；`io.modelcontextprotocol/clientInfo` 可选且不可信，服务器不能沿用前一次请求的 metadata；
+- `params._meta` 的**全部**字段皆为可选且不可信；服务器不校验其存在性，也不能沿用前一次请求的 metadata。本条在 2026-08-26 由「至少包含 `io.modelcontextprotocol/protocolVersion` 与 `io.modelcontextprotocol/clientCapabilities`」推翻为现状，理由见 §27.3：`_meta` 是客户端自报信息，强制其存在只会拦住手写请求，拦不住任何构造得出请求的调用方，而权威 protocol version 已由 `MCP-Protocol-Version` header 承担；
 - `MCP-Protocol-Version` 必须为 `2026-07-28`；每个 JSON-RPC request 都必须带与 body method 完全一致的 `Mcp-Method`。按官方标准 header 合同，`tools/call`、`resources/read`、`prompts/get` 必须分别带与 body `params.name`、`params.uri`、`params.name` 完全一致的 `Mcp-Name`；本服务已实现的方法中只有 `tools/call` 属于此列。即使 `resources/read` 与 `prompts/get` 最终因未实现而返回 404/`-32601`，也必须先执行相应 header 校验与 HeaderMismatch 分类；其他 method 不要求或解释 `Mcp-Name`；
 - MCP header names 按 HTTP 规则大小写不敏感、header values 大小写敏感；required MCP header 必须恰有一个逻辑值。`Mcp-Name` 比较前实现官方 `=?base64?...?=` sentinel 解码与非法编码拒绝；两个固定 tool name 仍按普通 ASCII 发送。V1 input schemas 不使用 `x-mcp-header`，因此不要求或解释任何 `Mcp-Param-*`；
 - 请求 `Content-Type` 必须是 `application/json`（允许标准 charset parameter），拒绝任何非 identity `Content-Encoding`；16 MiB 上限同时在声明长度和流式实际读取处执行，不能因缺失 `Content-Length` 或 chunked transfer 绕过；
@@ -608,6 +608,24 @@ Host/Origin 拒绝、超大 body 或无法解析的任意协议载荷只记录�
 在 2026-08-25 做出本决策时，官方 Java SDK 2.0.1 对应 MCP `2025-11-25`，其 HTTP server transport 依赖 Servlet container，不能作为本项目的 2026 实现。禁止通过补 header 或私有 fork 将其标注为兼容 `2026-07-28`。
 
 本文中的 enabled session 只指 Burp 本地“手动启用到关闭/unload”的生命周期，不是 MCP protocol session。每个 POST 独立，不签发、要求或回显 `Mcp-Session-Id`。
+
+### 16.1.1 Client-agnostic HTTP 通道（2026-08-26）
+
+本 adapter 不实现 legacy `initialize`，也只接受 `MCP-Protocol-Version: 2026-07-28`。因此仍停留在 `2025-11-25` 或更早的原生客户端会在握手处收到 400/`-32022`，**这是设计结果，不是缺陷**。
+
+这些客户端不因此失去本功能：`/mcp` 的完整能力可由五个 header 的普通 POST 取得，任何能执行 shell 命令的 agent 都能使用，与其 MCP 实现版本无关。
+
+- 必需 header 只有 `Content-Type`、`Accept`（双值）、`MCP-Protocol-Version`、`Mcp-Method`，以及 `tools/call` 的 `Mcp-Name`；`params._meta` 不必填（见 §16.1）；
+- **授权边界完全不变**：该通道上的 `propose` 同样只登记提议，同样只能由用户在 Burp UI 批准。它是另一种 transport，不是绕过 §11 审批的路径；
+- 该通道不新增攻击面。§4.2 已经承认任何以该用户身份运行的本机进程都能读写这个端点；一个 MCP 客户端本来就是这样的进程之一，用不用官方 SDK 不改变信任模型；
+- 该通道的可执行示例是 `skills/awesome-tls-mcp/SKILL.md` §7 的合同的一部分，§17.3 对其有验收要求。
+
+**已评估并拒绝：dual-era 兼容。** 让本 adapter 同时回答 legacy `initialize` 与 `2025-11-25`（MCP 官方对 v2 服务器的建议做法）在 2026-08-26 被评估并拒绝，理由是它要求推翻本节既有决策、为 legacy 路径新增一整套请求处理与固定合同自检、并放宽当前每一个 gate 都是拒绝面的结构，而在决策时**没有任何一个客户端的实测数据表明它只差这一步**。以下任一条件成立时重新评估：
+
+- 实测确认某个用户实际在用的客户端，除协议版本外其余条件全部就绪；
+- 官方 SDK 的 `2026-07-28` 支持转 GA 且主流客户端完成升级——届时本项的价值本身也随之下降。
+
+过渡期内本节的 HTTP 通道即为这些客户端的可用路径，能力无损，代价只是工具不出现在客户端的 tool list 里。
 
 ### 16.2 Discovery 与 tool list 固定合同
 
@@ -1156,6 +1174,8 @@ server/discover
 
 只把实际完成上述 E2E 的 Codex Desktop/CLI 版本写成 verified support。其他原生 MCP 客户端不得在没有对应测试的情况下宣传为正式支持。
 
+此外，§16.1.1 的 HTTP 通道必须独立验收，且不依赖任何客户端：`skills/awesome-tls-mcp/SKILL.md` §7 中的 `tools/list` 与 `inspect` 命令必须可**原样复制执行**并得到 200 与预期 JSON。文档里的示例是这条通道的唯一说明，示例失效等同于通道失效。此项已于 2026-08-26 对运行中的 listener 执行通过。
+
 ## 18. 推荐实施顺序
 
 1. 锁定 Java 17 toolchain，建立纯 Java `SettingsControl` domain model、snapshot、validator、revision 和 matcher seam。
@@ -1206,6 +1226,7 @@ Burp 自带运行时为 **JRE 24.0.1，且 `java --list-modules` 中没有 `jdk.
 - inspect / propose 不做 DNS：通过 `java.net.spi.InetAddressResolverProvider` 计数器实测为 0（`./gradlew noNetworkCheck`）；
 - Go 侧独立 `RuntimeStatePort`：新增 `runtimestatus.go` 与 `GetRuntimeStatus` cgo 导出，`TransportConfig` 未改动；并发状态通过 `go test -race`；
 - external proxy URL v1 合同的 Java/Go 双向 golden vectors（`burp.control.ProxyUrl` 与 `src-go/server/proxyurl_test.go`）；
+- *Connect a client* 的每条剪贴板内容：JSON 合法性、两种 JSON 形状不得互串、skill 三条路径齐备、install 行必须覆盖而非追加（`burp.control.ClientSnippets`）；
 - fat jar 在 Burp 自带 JRE 24 上独立加载并跑通全部自检；扩展在替身 Montoya API 下可初始化、建 UI、启停 MCP 并 unload（`./gradlew extensionSmoke`）。
 
 ### 21.3 尚未完成的 gate
@@ -1342,3 +1363,48 @@ remove 看上去比 upsert 安全，因此"至少允许 AI 删掉隐藏行"是�
 `note`（§8.1 rule 字段）不跨 JNA、不进 `TransportConfig`、不参与匹配。它仍然进入 canonical document 和 revision，因为 `rules.json` 是三方合并的 base：备注若不进摘要，两条只差备注的行摘要相同，下一次合并会无冲突地丢掉其中一条。
 
 因此**升级到带 `note` 的版本会使既有配置的 revision 迁移一次**，客户端手上的 `expectedRevision` 会失效一次，重新 inspect 即可。同理，旧版 `RuleStore.parse` 的严格解析会把 `note` 当未知字段拒绝，**降级前必须先移除该字段**。
+
+## 27. 修订记录 R5：面向多客户端（2026-08-26，用户明确批准）
+
+起因：AI Control 的 *Connect a client* 只给了 Claude Code 与 Codex 两条命令，读起来像"只支持这两个客户端"。调研后发现这个印象与真实限制不是一回事，两者都需要处理。
+
+### 27.1 变更内容
+
+- **Skill 分发路径合同**。Agent Skills（`SKILL.md`）自 2025-12 起是跨工具开放标准，同一份文件由多个客户端从**同一批路径**读取。本项目按路径而非按客户端分发：
+
+  | 路径 | 读它的客户端 |
+  | --- | --- |
+  | `~/.claude/skills/awesome-tls-mcp/SKILL.md` | Claude Code、OpenCode、Cursor、Copilot / VS Code、Gemini CLI |
+  | `~/.agents/skills/awesome-tls-mcp/SKILL.md` | 同上的中立路径 |
+  | `~/.codex/skills/awesome-tls-mcp/SKILL.md` | Codex CLI / Desktop |
+
+  **不得按客户端逐个新增按钮。** 客户端数量是几十级且持续变动，而路径只有上面三条；逐个列举会在任何一次客户端改名或改路径时腐烂，且掩盖"路径本来就是共享的"这一事实。
+
+- **推翻旧的 Codex skill 安装方式**。原实现向 `~/.codex/AGENTS.md` **追加** 整份文档，这在 Codex 支持 `SKILL.md` 之前是权宜之计，现在有两处实际损害：160 行参考资料变成 Codex 的永久全局指令；重复执行留下多份副本。改为写入 `~/.codex/skills/`，覆盖而非追加，可安全重复执行。
+
+- **面板文案区分"注册"与"连接"**，如实说明三层：Codex Desktop/CLI 已验证；其他 `2026-07-28` 客户端 best-effort；更早的客户端会收到 400/`-32022`，并指向 §16.1.1 的 HTTP 通道。
+
+- **新增 OpenCode 的 JSON 形状**（`mcp` / `type: "remote"`）。通用的 `mcpServers` / `type: "http"` 贴进 `opencode.json` 会被静默忽略，其失效方式与从未配置完全相同。
+
+- **`SKILL.md` §7 由 "Raw HTTP (debugging only)" 升格为正式通道**，补齐可原样执行的 `tools/list` / `inspect` / `propose` 示例，并明示授权模型不变。
+
+### 27.2 未变更的部分
+
+协议层未作任何改动：仍然只接受 `2026-07-28`，仍不实现 `initialize`，仍拒绝一切 notification 与任何 `Origin`。§11 的审批边界、§4.2 的风险披露、tool 集合与固定合同均未变。dual-era 兼容的评估与拒绝见 §16.1.1。
+
+### 27.3 推翻 `_meta` 必填要求
+
+§16.1 原先要求每个 request 的 `params._meta` 至少包含 `protocolVersion` 与 `clientCapabilities`。实现从未校验这一点，而 2026-08-26 的复核结论是**应当改文档而不是加校验**：
+
+- `_meta` 是客户端自报信息，§1 已将其定性为不可信，强制其存在不产生任何安全收益；
+- 权威的 protocol version 已由 `MCP-Protocol-Version` header 承担，并已在 header/body 一致性之外单独校验；
+- 唯一会被这条校验拦下的是手写请求，而 §16.1.1 恰恰依赖手写请求可行。
+
+即：这是一条只增加合规文本长度、不改变任何攻击面的要求，删除它使文档与实现一致，而不是使实现变松。
+
+### 27.4 合同影响
+
+- `tools/list`、`server/discover`、schema、error mapping、revision 计算：**均无变化**；
+- 变的只有 UI 文案、剪贴板内容与 `SKILL.md`；
+- §17.3 新增一条不依赖客户端的验收：`SKILL.md` §7 的命令必须可原样执行；
+- 剪贴板内容从 `AiControlPanel` 提取为 `burp.control.ClientSnippets`（无 Swing/Burp 依赖）并纳入 `selfCheck`。此前这些字符串只能靠人点按钮、读剪贴板来验证，而它们的失效方式全是静默的——路径错则 skill 不被任何客户端读取，JSON key 错则客户端静默忽略。旧的 Codex 追加式安装能在 Codex 支持 `SKILL.md` 之后继续存在数月，正是因为没有这层检查。

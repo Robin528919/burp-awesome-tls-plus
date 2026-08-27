@@ -130,25 +130,47 @@ a restart.
    }
    ```
 
+   OpenCode shares no key with that shape, and ignores it in silence. Its `opencode.json` wants:
+
+   ```json
+   {
+     "mcp": {
+       "awesome-tls": {
+         "type": "remote",
+         "url": "http://127.0.0.1:8885/mcp",
+         "enabled": true
+       }
+     }
+   }
+   ```
+
    Both commands register the server **globally**, for every project. Drop `--scope user` to keep it
    to the current project instead. A globally registered client can reach this endpoint from any
    session, whenever it is enabled in Burp.
+
+   **Registering is not the same as connecting.** This endpoint speaks MCP `2026-07-28` and nothing
+   else. Codex Desktop and Codex CLI are what it is built against; any other client on that revision
+   is best-effort; and a client still on `2025-11-25` or earlier is answered with HTTP 400 and
+   `unsupported protocol version` — the endpoint refusing the handshake, not a mistake in the command
+   above. Those clients are not stuck: five headers on a plain POST reach the whole endpoint with the
+   same approval boundary, which is what section 7 of the skill below documents.
 3. Optionally install the companion **skill**. Registering the endpoint tells a client only that two
    tools exist; the skill is what tells it which of a fingerprint and a hex ClientHello wins, the
    acknowledgements a proposal has to carry, and how to capture a real ClientHello in the first
    place. The tab copies these commands too:
 
    ```sh
-   mkdir -p ~/.claude/skills/awesome-tls-mcp && curl -fsSL -o ~/.claude/skills/awesome-tls-mcp/SKILL.md https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md
+   mkdir -p ~/.claude/skills/awesome-tls-mcp ~/.agents/skills/awesome-tls-mcp && curl -fsSL -o ~/.claude/skills/awesome-tls-mcp/SKILL.md https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md && cp ~/.claude/skills/awesome-tls-mcp/SKILL.md ~/.agents/skills/awesome-tls-mcp/SKILL.md
    ```
 
    ```sh
-   mkdir -p ~/.codex && curl -fsSL https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md >> ~/.codex/AGENTS.md
+   mkdir -p ~/.codex/skills/awesome-tls-mcp && curl -fsSL -o ~/.codex/skills/awesome-tls-mcp/SKILL.md https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md
    ```
 
-   Skills are a Claude Code feature — Codex reads plain instructions, so the same file is appended to
-   its `AGENTS.md` rather than maintained as a second document. Running that second line twice leaves
-   two copies; delete the old section before re-running it to update. Installing is optional and
+   A skill is one `SKILL.md` in a standard directory, not a per-client format: `~/.claude/skills` and
+   `~/.agents/skills` are both scanned by Claude Code, OpenCode, Cursor, Copilot and Gemini CLI, and
+   Codex adds `~/.codex/skills`. That is why there are two lines rather than one per client. Both
+   overwrite rather than append, so re-running either one updates in place. Installing is optional and
    changes nothing in Burp. The source is [`skills/awesome-tls-mcp/SKILL.md`](https://github.com/Robin528919/burp-awesome-tls-plus/blob/main/skills/awesome-tls-mcp/SKILL.md).
 4. When a proposal arrives, the tab is marked with a dot. It never steals focus or opens a dialog on
    its own.

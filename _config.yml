@@ -32,6 +32,9 @@ exclude:
   # SKILL.md is fetched raw by AI clients; as a page its YAML front matter would render as a
   # stray, badly titled entry in the sitemap.
   - skills/
+  # Requirements are working documents for one change, not product pages. docs/decisions/ stays
+  # published on purpose — an ADR keeps explaining the shipped behaviour; a requirement does not.
+  - docs/requirements/
   - build/
   - gradle/
   - gradlew

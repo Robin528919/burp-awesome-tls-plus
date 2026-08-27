@@ -12,7 +12,7 @@ The normative design and acceptance contract is [ADR-0001: AI Settings Control v
 
 It is implemented. The embedded HTTP engine is Jetty 12 core, chosen by the section 16.5 spike: Burp's bundled runtime is a JRE 24 **without `jdk.httpserver`**, so `com.sun.net.httpserver` is unavailable, and Jetty core needs no servlet container. Outstanding before release: the section 17.3 end-to-end run with Codex Desktop and Codex CLI inside a real Burp, which cannot be automated here.
 
-The ADR has been amended four times, with explicit approval; see its sections 22 to 25. Do not treat "the AI can never change settings" as still true without qualification, and do not remove the auto-apply switch's remaining constraints — off by default, confirmed when armed, armable only from Burp — as tidying.
+The ADR has been amended five times, with explicit approval; see its sections 22 to 25 and 27. Do not treat "the AI can never change settings" as still true without qualification, and do not remove the auto-apply switch's remaining constraints — off by default, confirmed when armed, armable only from Burp — as tidying.
 
 The non-negotiable core is:
 
@@ -26,7 +26,9 @@ The non-negotiable core is:
 - Put Swing and MCP behind one `SettingsControl` seam with shared validation, canonical revisioning, diffing, persistence, runtime-impact classification, and an immutable snapshot plus matching `RuleMatcher` published atomically.
 - Preserve the scalar-Preferences/domain-`rules.json` storage split, but add staged persistence, compensation, and startup recovery. Never publish a partially persisted runtime snapshot or silently use last-write-wins.
 - Treat configured and active listener state separately. In particular, request rewriting must continue to use the Go listener's actual active address until the extension is reloaded.
-- Target MCP `2026-07-28`, keep Java 17, and validate the chosen embedded HTTP engine inside the real Burp runtime before locking it in. Do not downgrade the protocol or present an older SDK as 2026-compatible.
+- Target MCP `2026-07-28`, keep Java 17, and validate the chosen embedded HTTP engine inside the real Burp runtime before locking it in. Do not downgrade the protocol or present an older SDK as 2026-compatible. Answering the legacy `initialize` handshake as well — what MCP officially suggests for a v2 server — was evaluated and rejected in ADR §16.1.1, which also lists what would reopen it.
+- **A client that cannot speak `2026-07-28` is not excluded (ADR §16.1.1).** The full endpoint is reachable with five headers over a plain POST, which is what `SKILL.md` §7 documents, and the authorization boundary is identical there — `propose` still only records a proposal. Treat those examples as contract: §17.3 requires them to run as copied.
+- **Skills ship by path, not by client (ADR §27.1).** One `SKILL.md`, three paths — `~/.claude/skills/`, `~/.agents/skills/`, `~/.codex/skills/` — read by Claude Code, OpenCode, Cursor, Copilot, Gemini CLI and Codex between them. Do not add a button per client: the client list is dozens long and moves, the path list is three and does not.
 - AI Control is session-enabled, unauthenticated, bound only to literal `127.0.0.1`, checks the exact `Host`, and rejects every `/mcp` request carrying `Origin`. It returns full proxy credentials and raw ClientHello values without redaction. The UI must warn on every enable that any local process can read them.
 - Do not expand or rename the Java/Go `TransportConfig` contract for this feature. Any authentication mode, browser/remote client support, unattended apply, different protocol version, or storage migration is a new architecture decision.
 

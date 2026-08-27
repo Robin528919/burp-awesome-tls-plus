@@ -47,6 +47,7 @@ def selfChecks = [
         'burp.control.TransactionJournal',
         'burp.control.AuditTrail',
         'burp.control.Analysis',
+        'burp.control.ClientSnippets',
         'burp.control.EffectiveConfigs',
         'burp.control.ThreeWayMerge',
         'burp.control.Proposal',
