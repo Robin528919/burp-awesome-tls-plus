@@ -3,6 +3,7 @@ package probe;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.net.URI;
 import java.nio.file.Files;
 import java.util.HashMap;
 import java.util.List;
@@ -66,6 +67,18 @@ public final class ExtensionSmoke {
         var config = settings.toTransportConfig("example.com");
         check(config != null && config.Fingerprint != null, "a transport config is produced");
         check(config.HttpTimeout > 0, "with a usable timeout");
+
+        // The port has to survive into the config, because Go assigns it to req.URL.Host and a
+        // bare host there means the scheme's default. Dropping it sent every request to a
+        // non-default port at 80/443 instead, reporting a port the user never typed.
+        check(burp.Extension.hostWithPort(new URI("http://127.0.0.1:9999/x").toURL())
+                        .equals("127.0.0.1:9999"), "a non-default port reaches the Go side");
+        check(burp.Extension.hostWithPort(new URI("https://example.com:8443/x").toURL())
+                        .equals("example.com:8443"), "including over https");
+        check(burp.Extension.hostWithPort(new URI("https://example.com/x").toURL())
+                        .equals("example.com"), "and a URL without a port stays bare");
+        check(burp.Extension.hostWithPort(new URI("http://[::1]:8080/x").toURL())
+                        .equals("[::1]:8080"), "IPv6 literals keep the brackets Go expects");
 
         // Whatever the native library reports, the configured address is only a fallback.
         check(settings.activeSpoofProxyAddress() != null, "an active listen address is reported");

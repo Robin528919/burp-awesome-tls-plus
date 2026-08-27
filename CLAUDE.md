@@ -244,6 +244,14 @@ using the Java field names (hence the unusual capitalized public fields) and Go'
 `encoding/json` matches them case-insensitively. Renaming a field on one side only causes
 a *silent* fallback to the zero value, not an error.
 
+`Host` is the field to be careful with: it is the destination in Go's `url.URL.Host` sense —
+`host:port` — and *not* the hostname, even though both languages called it "Hostname" until
+2026-08-26. The Go side assigns it straight to `req.URL.Host`, where a bare host means the
+scheme's default port, so sending `getHost()` alone made every request to a non-default port
+dial 80 or 443 instead. The rule lookup on the line above it *does* take a bare hostname —
+rules match domains, not ports — so the two must not be collapsed into one value. See
+`Extension#hostWithPort`, asserted in `extensionSmoke`.
+
 **The magic header name has a hard format restriction.** `Awesometlsconfig` — one leading
 capital, rest lowercase. Burp's Extender API mangles anything else (see `server.go:14-16`).
 

@@ -139,8 +139,10 @@ public class Extension implements BurpExtension {
                 headerOrder[i] = request.headers().get(i).name();
             }
 
+            // The rule lookup takes the bare hostname — rules match domains, not ports — while the
+            // config field below carries the port too. Two different things that both read "host".
             var transportConfig = settings.toTransportConfig(requestURL.getHost());
-            transportConfig.Host = requestURL.getHost();
+            transportConfig.Host = hostWithPort(requestURL);
             transportConfig.Scheme = requestURL.getProtocol();
             transportConfig.HeaderOrder = headerOrder;
 
@@ -159,5 +161,23 @@ public class Extension implements BurpExtension {
             api.logging().logToError("Http request error: " + e);
             return request;
         }
+    }
+
+    /**
+     * The destination as Go's {@code url.URL.Host} means it: {@code host:port}, with the port left
+     * off only when the URL did not carry one.
+     * <p>
+     * The Go side assigns this straight to {@code req.URL.Host}, so a bare hostname does not mean
+     * "the port it came from" — it means the scheme's default. Sending {@code getHost()} alone made
+     * every request to a non-default port dial 80 or 443 instead, and the only symptom was a
+     * connection error naming a port the user never typed.
+     * <p>
+     * {@link URL#getPort()} is -1 when the URL has no explicit port, which is the case to leave
+     * alone. IPv6 literals already arrive bracketed from {@link URL#getHost()}, which is the form
+     * Go expects, so they need no special handling here.
+     */
+    public static String hostWithPort(URL url) {
+        var port = url.getPort();
+        return port == -1 ? url.getHost() : url.getHost() + ":" + port;
     }
 }
