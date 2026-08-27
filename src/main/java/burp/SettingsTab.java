@@ -36,6 +36,9 @@ public class SettingsTab {
     private static final int TAB_DEFAULTS = 0;
     private static final int TAB_RULES = 1;
     private static final int TAB_ADVANCED = 2;
+    private static final int TAB_AI_CONTROL = 3;
+
+    private static final String AI_CONTROL_TITLE = "AI Control";
 
     /**
      * Keeps text fields to a readable width instead of stretching across Burp's full window.
@@ -77,6 +80,15 @@ public class SettingsTab {
 
     private final List<String> fingerprints;
 
+    private final AiControlPanel aiControlPanel;
+
+    /**
+     * The revision this tab last committed. A commit made from here has already left the form and
+     * the table in the right state; reloading in response to it would reset the user's selection
+     * and scroll position for no reason.
+     */
+    private volatile String selfCommittedRevision;
+
     private final Timer autoSaveTimer;
 
     /**
@@ -107,6 +119,8 @@ public class SettingsTab {
         tabs.addTab("Defaults", buildDefaultsPanel());
         tabs.addTab("Domain rules", buildRulesPanel());
         tabs.addTab("Advanced", buildAdvancedPanel());
+        this.aiControlPanel = new AiControlPanel(settings, this::refreshPendingBadge);
+        tabs.addTab(AI_CONTROL_TITLE, aiControlPanel.getUI());
 
         panelMain.setBorder(new EmptyBorder(8, 8, 8, 8));
         panelMain.add(buildStatusBar(), BorderLayout.NORTH);
@@ -121,7 +135,27 @@ public class SettingsTab {
             }
         });
 
+        // The tab has to be able to say whether it is holding an edit, because a proposal is
+        // reviewed against committed settings and nothing else.
+        settings.setDirtyReporter(this::dirtyReasons);
+        settings.control().addListener(snapshot -> onSettingsCommitted());
+
         load();
+        refreshPendingBadge();
+    }
+
+    /**
+     * Marks the tab when a proposal is waiting. Deliberately just a label: ADR-0001 section 9
+     * forbids stealing focus or opening a dialog, because a proposal can arrive at any moment and
+     * an unexpected modal over someone's work is how a review gets clicked through.
+     */
+    private void refreshPendingBadge() {
+        SwingUtilities.invokeLater(() -> {
+            var proposal = settings.aiService().pending();
+            var waiting = proposal != null
+                    && proposal.status() == burp.control.Proposal.Status.PENDING;
+            tabs.setTitleAt(TAB_AI_CONTROL, waiting ? AI_CONTROL_TITLE + " \u2022" : AI_CONTROL_TITLE);
+        });
     }
 
     public JPanel getUI() {
@@ -146,7 +180,7 @@ public class SettingsTab {
         try {
             return List.of(settings.getFingerprints());
         } catch (Throwable t) {
-            return List.of(Settings.DEFAULT_TLS_FINGERPRINT);
+            return List.of(burp.control.BusinessSettings.DEFAULT_FINGERPRINT);
         }
     }
 
@@ -169,12 +203,17 @@ public class SettingsTab {
     private JComponent buildActionBar() {
         var buttonSave = new JButton("Save settings");
         buttonSave.addActionListener(e -> save());
-        buttonSave.setToolTipText("Saves all three tabs at once.");
+        buttonSave.setToolTipText("Saves the Defaults and Advanced tabs, and any pending rule edit.");
 
         var bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
         bar.setBorder(new EmptyBorder(8, 4, 0, 4));
         bar.add(buttonSave);
         bar.add(labelFeedback);
+
+        // AI Control has nothing this button saves: the port is stored when the listener starts and
+        // the audit switch when it is clicked. Leaving it visible there invites a click that
+        // silently commits whatever is sitting in a tab the user is not looking at.
+        tabs.addChangeListener(e -> bar.setVisible(tabs.getSelectedIndex() != TAB_AI_CONTROL));
         return bar;
     }
 
@@ -212,12 +251,39 @@ public class SettingsTab {
         return wrapScrollable(form);
     }
 
+    /**
+     * Read-only view of the selected row, so a long value can be read without a wider column.
+     */
+    private final JTextArea textRuleDetailHex = new JTextArea(4, 10);
+    private final JTextArea textRuleDetailNote = new JTextArea(1, 10);
+    private final JLabel labelRuleDetailTitle = new JLabel();
+    private final JLabel labelRuleDetailHexFacts = new JLabel();
+    private final JButton buttonRuleDetailCopy = new JButton("Copy hex");
+    private final JPanel panelRuleDetailNote = new JPanel(new BorderLayout(6, 0));
+    private JComponent ruleDetailHexScroll;
+
     private JComponent buildRulesPanel() {
         var panel = new JPanel(new BorderLayout(0, 8));
         panel.setBorder(new EmptyBorder(12, 12, 12, 12));
 
         panel.add(buildRulesHelp(), BorderLayout.NORTH);
-        panel.add(new JScrollPane(ruleTable), BorderLayout.CENTER);
+
+        // A cell cannot show a 500-byte ClientHello, and widening the column would starve the six
+        // others. The table's empty vertical space is the only space this window has to spare, so
+        // the detail goes underneath, full width, where a hex stream can wrap and be read.
+        var tableScroll = new JScrollPane(ruleTable);
+        // Both halves get an explicit preferred height, because a split pane lays out to preferred
+        // sizes first and a JScrollPane's default is large enough to push the divider off-screen.
+        tableScroll.setPreferredSize(new Dimension(0, 240));
+        tableScroll.setMinimumSize(new Dimension(0, 80));
+
+        var split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, buildRuleDetail());
+        // All the extra height goes to the table: the detail needs a readable fixed height, and
+        // rows are what there can be an unbounded number of.
+        split.setResizeWeight(1);
+        split.setBorder(null);
+        split.setContinuousLayout(true);
+        panel.add(split, BorderLayout.CENTER);
 
         var buttonAdd = new JButton("Add rule");
         buttonAdd.addActionListener(e -> {
@@ -254,6 +320,142 @@ public class SettingsTab {
         panel.add(footer, BorderLayout.SOUTH);
 
         return panel;
+    }
+
+
+    /**
+     * The detail pane under the rules table.
+     * <p>
+     * Read-only on purpose: editing still happens in the cell, so there is no second source of
+     * truth to keep in sync with the table model, the autosave timer and the dirty check.
+     */
+    private JComponent buildRuleDetail() {
+        labelRuleDetailTitle.setFont(labelRuleDetailTitle.getFont().deriveFont(Font.BOLD));
+
+        for (var area : List.of(textRuleDetailHex, textRuleDetailNote)) {
+            area.setEditable(false);
+            area.setLineWrap(true);
+            // A hex stream has no spaces, so it only wraps at all with character wrapping off.
+            area.setWrapStyleWord(false);
+            area.setBorder(new EmptyBorder(4, 6, 4, 6));
+        }
+        textRuleDetailHex.setFont(new Font(Font.MONOSPACED, Font.PLAIN,
+                UIManager.getFont("Label.font") == null ? 12 : UIManager.getFont("Label.font").getSize()));
+
+        buttonRuleDetailCopy.addActionListener(e -> {
+            var hex = textRuleDetailHex.getText();
+            if (!hex.isEmpty()) {
+                Toolkit.getDefaultToolkit().getSystemClipboard()
+                        .setContents(new java.awt.datatransfer.StringSelection(hex), null);
+            }
+        });
+
+        var header = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        header.add(labelRuleDetailTitle);
+        header.add(labelRuleDetailHexFacts);
+        header.add(buttonRuleDetailCopy);
+
+        // The note sits above the hex and keeps its natural height. The hex is why this pane
+        // exists, so it takes every row that is left.
+        textRuleDetailNote.setRows(1);
+        var noteScroll = new JScrollPane(textRuleDetailNote,
+                ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        noteScroll.setPreferredSize(new Dimension(0, 40));
+        var noteLabel = new JLabel("Note");
+        noteLabel.setBorder(new EmptyBorder(4, 2, 0, 0));
+        noteLabel.setVerticalAlignment(SwingConstants.TOP);
+        panelRuleDetailNote.add(noteLabel, BorderLayout.WEST);
+        panelRuleDetailNote.add(noteScroll, BorderLayout.CENTER);
+
+        var top = new JPanel(new BorderLayout(0, 4));
+        top.add(header, BorderLayout.NORTH);
+        top.add(panelRuleDetailNote, BorderLayout.CENTER);
+
+        ruleDetailHexScroll = new JScrollPane(textRuleDetailHex,
+                ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+
+        var panel = new JPanel(new BorderLayout(0, 6));
+        panel.setBorder(new EmptyBorder(8, 0, 0, 0));
+        panel.add(top, BorderLayout.NORTH);
+        panel.add(ruleDetailHexScroll, BorderLayout.CENTER);
+        panel.setMinimumSize(new Dimension(0, 150));
+        panel.setPreferredSize(new Dimension(0, 210));
+
+        ruleTable.getSelectionModel().addListSelectionListener(e -> showRuleDetail());
+        ruleTableModel.addTableModelListener(e -> showRuleDetail());
+        showRuleDetail();
+        return panel;
+    }
+
+    /**
+     * Fills the detail pane from the selected row, or empties it when the selection is not one row.
+     */
+    private void showRuleDetail() {
+        var rows = ruleTable.getSelectedRowCount();
+        if (rows != 1) {
+            labelRuleDetailTitle.setText(rows == 0
+                    ? "Select a row to see its full Hex ClientHello and note."
+                    : rows + " rows selected.");
+            labelRuleDetailHexFacts.setText("");
+            buttonRuleDetailCopy.setEnabled(false);
+            textRuleDetailHex.setText("");
+            textRuleDetailNote.setText("");
+            panelRuleDetailNote.setVisible(false);
+            ruleDetailHexScroll.setVisible(false);
+            return;
+        }
+
+        var viewRow = ruleTable.getSelectedRow();
+        if (viewRow < 0 || viewRow >= ruleTable.getRowCount()) {
+            // A row was removed and the selection has not caught up yet; the next event fixes it.
+            return;
+        }
+        var row = ruleTable.convertRowIndexToModel(viewRow);
+        if (row < 0 || row >= ruleTableModel.getRowCount()) {
+            return;
+        }
+        var rule = ruleTableModel.ruleAt(row);
+        var hex = rule.hexClientHello == null ? "" : rule.hexClientHello.trim();
+
+        labelRuleDetailTitle.setText(rule.hostPattern.isEmpty() ? "(no host pattern)" : rule.hostPattern);
+        labelRuleDetailHexFacts.setText(hex.isEmpty()
+                ? "—  no Hex ClientHello; this row inherits the Defaults tab."
+                : "—  Hex ClientHello, " + describeHex(hex));
+        buttonRuleDetailCopy.setEnabled(!hex.isEmpty());
+        textRuleDetailHex.setText(hex);
+        textRuleDetailHex.setCaretPosition(0);
+        textRuleDetailNote.setText(rule.note);
+        textRuleDetailNote.setCaretPosition(0);
+
+        // An empty box below a line that already says the value is absent is just a box.
+        ruleDetailHexScroll.setVisible(!hex.isEmpty());
+        panelRuleDetailNote.setVisible(!rule.note.isEmpty());
+    }
+
+    /**
+     * What is actually worth knowing when eyeballing a captured hello: how much of it there is, and
+     * whether it is a whole TLS record. A truncated capture is still valid hex and fails much later,
+     * so saying so here is cheaper than discovering it from a handshake error.
+     */
+    private static String describeHex(String hex) {
+        byte[] bytes;
+        try {
+            bytes = java.util.HexFormat.of().parseHex(hex);
+        } catch (IllegalArgumentException e) {
+            return hex.length() + " characters — not valid hex.";
+        }
+        var size = bytes.length + " bytes";
+        if (bytes.length < 6 || (bytes[0] & 0xFF) != 0x16 || (bytes[5] & 0xFF) != 0x01) {
+            return size + " — does not start with a TLS handshake record (16 …) and a ClientHello (… 01).";
+        }
+        var declared = ((bytes[3] & 0xFF) << 8 | (bytes[4] & 0xFF)) + 5;
+        if (declared != bytes.length) {
+            return size + " — the record header declares " + declared
+                    + ", so this is truncated or spans several TCP segments.";
+        }
+        return size + " — a complete ClientHello record.";
     }
 
     private void removeSelectedRules() {
@@ -405,6 +607,7 @@ public class SettingsTab {
         setColumnWidth(table, RuleTableModel.COL_HEX, 260, 140);
         setColumnWidth(table, RuleTableModel.COL_PROXY, 240, 140);
         capColumnWidth(table, RuleTableModel.COL_TIMEOUT, 90, 70, 120);
+        setColumnWidth(table, RuleTableModel.COL_NOTE, 220, 120);
 
         return table;
     }
@@ -563,8 +766,41 @@ public class SettingsTab {
      * Wrapping, non-editable body text. A plain JLabel would clip instead of wrapping, and HTML
      * is not an option because Burp renders it literally.
      */
-    private static JTextArea descriptionText(String text) {
-        var area = new JTextArea(text);
+    /**
+     * Like {@link #descriptionText}, but in the normal text colour.
+     * <p>
+     * The muted hint colour is right for a field's explanation and wrong for a security
+     * disclosure: Burp renders non-editable text areas dimmed, so the AI Control warning ends up
+     * looking like disabled text — exactly the thing a reader's eye skips.
+     */
+    static JTextArea warningText(String text) {
+        var area = descriptionText(text);
+        var foreground = UIManager.getColor("Label.foreground");
+        if (foreground != null) {
+            area.setForeground(foreground);
+        }
+        return area;
+    }
+
+    static JTextArea descriptionText(String text) {
+        // A wrapping JTextArea reports the preferred height it would need at its *preferred* width,
+        // which for wrapped text is meaningless — the height depends on the width it is actually
+        // given. Left alone it asks for one line and gets clipped. Asking the text View for the
+        // span it needs at the current width is the answer the layout manager needs.
+        var area = new JTextArea(text) {
+            @Override
+            public java.awt.Dimension getPreferredSize() {
+                var width = getWidth();
+                if (width <= 0 || !getLineWrap()) {
+                    return super.getPreferredSize();
+                }
+                var view = getUI().getRootView(this);
+                view.setSize(width, Integer.MAX_VALUE);
+                var insets = getInsets();
+                var height = (int) view.getPreferredSpan(javax.swing.text.View.Y_AXIS);
+                return new java.awt.Dimension(width, height + insets.top + insets.bottom);
+            }
+        };
         area.setEditable(false);
         area.setOpaque(false);
         area.setFocusable(false);
@@ -605,16 +841,36 @@ public class SettingsTab {
     }
 
     /**
-     * @return an error message if the rules could not be written to disk, else null.
+     * @return an error message if the rules could not be committed, else null.
+     * <p>
+     * Note what changed with ADR-0001: rules are no longer applied to the live configuration first
+     * and written afterwards. A change that cannot be stored is a change that does not happen, so
+     * that what is running and what is on disk cannot drift apart.
      */
     private String writeRules() {
-        try {
-            settings.setRules(ruleTableModel.snapshot());
-            return null;
-        } catch (IOException e) {
-            return "Rules are active but could NOT be written to "
-                    + settings.getRuleStore().path() + ": " + e.getMessage();
+        var outcome = settings.saveRules(ruleTableModel.snapshot(),
+                burp.control.TransactionJournal.Source.RULES_AUTOSAVE);
+        rememberSelfCommit(outcome);
+        return outcomeError(outcome, "Domain rules were NOT saved");
+    }
+
+    private void rememberSelfCommit(burp.control.SettingsControl.Outcome outcome) {
+        if (outcome instanceof burp.control.SettingsControl.Outcome.Committed committed) {
+            selfCommittedRevision = committed.snapshot().revision();
         }
+    }
+
+    /**
+     * @return a message for a failed commit, or null when it succeeded.
+     */
+    private static String outcomeError(burp.control.SettingsControl.Outcome outcome, String prefix) {
+        if (outcome instanceof burp.control.SettingsControl.Outcome.Committed) {
+            return null;
+        }
+        if (outcome instanceof burp.control.SettingsControl.Outcome.RecoveryRequired recovery) {
+            return prefix + ". " + recovery.message();
+        }
+        return prefix + ": " + ((burp.control.SettingsControl.Outcome.Failed) outcome).message();
     }
 
     private void exportRules() {
@@ -759,24 +1015,17 @@ public class SettingsTab {
         var addressChanged = !textFieldSpoofProxyAddress.getText().trim().equals(settings.getSpoofProxyAddress())
                 || !textFieldInterceptProxyAddress.getText().trim().equals(settings.getInterceptProxyAddress());
 
-        settings.setSpoofProxyAddress(textFieldSpoofProxyAddress.getText().trim());
-        settings.setFingerprint(comboBoxFingerprint.getValue());
-        settings.setHexClientHello(textFieldHexClientHello.getText().trim());
-        settings.setExternalProxyUrl(textFieldExternalProxyUrl.getText().trim());
-        settings.setHttpTimeout((Integer) spinnerHttpTimeout.getValue());
-
-        settings.setUseInterceptedFingerprint(checkBoxUseInterceptedFingerprint.isSelected());
-        settings.setInterceptProxyAddress(textFieldInterceptProxyAddress.getText().trim());
-        settings.setBurpProxyAddress(textFieldBurpProxyAddress.getText().trim());
-
-        // Flush any rule edit still inside the debounce window, so one Save leaves nothing pending.
-        if (autoSaveTimer.isRunning()) {
-            autoSaveTimer.stop();
-            var ruleError = writeRules();
-            if (ruleError != null) {
-                showFeedback(ruleError, true);
-                return;
-            }
+        // One commit for the whole form, rules included. Writing the fields one at a time meant a
+        // failure halfway through left half the form applied and half not, with nothing saying so.
+        // Flushing the rule debounce here is also what makes Save leave nothing pending, which the
+        // AI Control tab depends on: a proposal cannot be reviewed against a draft.
+        autoSaveTimer.stop();
+        var outcome = settings.saveAll(formSettings(), ruleTableModel.snapshot());
+        rememberSelfCommit(outcome);
+        var failure = outcomeError(outcome, "Not saved");
+        if (failure != null) {
+            showFeedback(failure, true);
+            return;
         }
 
         // Rule cells show the values they inherit from this tab, so they are now stale.
@@ -787,6 +1036,90 @@ public class SettingsTab {
             message += " Reload the extension for the new listen address to take effect.";
         }
         showFeedback(message, false);
+    }
+
+    /**
+     * @return the global settings exactly as the form currently reads them.
+     */
+    private burp.control.BusinessSettings formSettings() {
+        return new burp.control.BusinessSettings(
+                textFieldSpoofProxyAddress.getText().trim(),
+                textFieldInterceptProxyAddress.getText().trim(),
+                textFieldBurpProxyAddress.getText().trim(),
+                comboBoxFingerprint.getValue(),
+                textFieldHexClientHello.getText().trim(),
+                checkBoxUseInterceptedFingerprint.isSelected(),
+                (Integer) spinnerHttpTimeout.getValue(),
+                textFieldExternalProxyUrl.getText().trim());
+    }
+
+    /**
+     * Why a proposal cannot be created or applied right now.
+     * <p>
+     * ADR-0001 section 8.3: a settings change while the user has an edit in progress would either
+     * overwrite their draft or be overwritten by it. Reporting the draft and refusing is the only
+     * option that does not lose someone's work.
+     */
+    /**
+     * True from the moment a foreign commit lands until the refresh it queued has run.
+     */
+    private final java.util.concurrent.atomic.AtomicBoolean refreshQueued =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    List<String> dirtyReasons() {
+        var reasons = new java.util.ArrayList<String>();
+        if (ruleTable.getCellEditor() != null) {
+            reasons.add("ACTIVE_CELL_EDITOR");
+        }
+        if (autoSaveTimer.isRunning()) {
+            reasons.add("PENDING_AUTOSAVE");
+        }
+        // Not while a commit's own refresh is still queued. The form is stale then, not edited —
+        // and reporting that as a draft made a settings change block the very next one, which is
+        // exactly the loop auto-apply exists for. A real draft is still caught: it can only be
+        // made on the EDT, which is where the queued refresh runs, and the two reasons above
+        // cover the cases where that refresh declines to overwrite it.
+        if (!refreshQueued.get() && !formSettings().sameAs(settings.snapshot().settings())) {
+            reasons.add("UNSAVED_UI_DRAFT");
+        }
+        return List.copyOf(reasons);
+    }
+
+    /**
+     * Refreshes the form after a change committed somewhere else — an approved proposal, a revert,
+     * or startup recovery. Always on the EDT, and never while the user is mid-edit.
+     */
+    void onSettingsCommitted() {
+        var snapshot = settings.snapshot();
+        if (snapshot.revision().equals(selfCommittedRevision)) {
+            SwingUtilities.invokeLater(() -> {
+                ruleTable.repaint();
+                if (aiControlPanel != null) {
+                    aiControlPanel.refresh();
+                }
+            });
+            return;
+        }
+
+        // Set before queueing, and cleared by the queued work itself: between these two points the
+        // form holds the previous revision's values through no fault of the user.
+        refreshQueued.set(true);
+        SwingUtilities.invokeLater(() -> {
+            try {
+                if (ruleTable.getCellEditor() != null || autoSaveTimer.isRunning()) {
+                    // A refusal to overwrite a draft; the change is committed either way, and the
+                    // tab catches up once the draft is resolved.
+                    return;
+                }
+                load();
+                ruleTable.repaint();
+            } finally {
+                refreshQueued.set(false);
+            }
+            if (aiControlPanel != null) {
+                aiControlPanel.refresh();
+            }
+        });
     }
 
     /**
@@ -1053,8 +1386,10 @@ public class SettingsTab {
         static final int COL_HEX = 3;
         static final int COL_PROXY = 4;
         static final int COL_TIMEOUT = 5;
+        static final int COL_NOTE = 6;
 
-        static final String[] COLUMNS = {"On", "Host pattern", "Fingerprint", "Hex ClientHello", "External proxy", "Timeout"};
+        static final String[] COLUMNS = {"On", "Host pattern", "Fingerprint", "Hex ClientHello", "External proxy",
+                "Timeout", "Note"};
 
         /**
          * Shown both as a header tooltip and in the legend above the table.
@@ -1069,6 +1404,9 @@ public class SettingsTab {
                         + "Empty inherits the Defaults tab.",
                 "Upstream proxy for this host, e.g. socks5://127.0.0.1:1080. Empty inherits the Defaults tab.",
                 "Connection timeout in seconds, 1 to 3600. Empty inherits the Defaults tab.",
+                "Free text for whoever reads this row later \u2014 where the capture came from, which app version, "
+                        + "why this host needs its own rule. Never sent anywhere; it only has to mean something to "
+                        + "you.",
         };
 
         private final List<FingerprintRule> rules = new ArrayList<>();
@@ -1205,6 +1543,7 @@ public class SettingsTab {
                 case COL_HEX -> rule.hexClientHello;
                 case COL_PROXY -> rule.externalProxyUrl;
                 case COL_TIMEOUT -> timeouts.get(row);
+                case COL_NOTE -> rule.note;
                 default -> "";
             };
         }
@@ -1219,6 +1558,7 @@ public class SettingsTab {
                 case COL_HEX -> rule.hexClientHello = text(value);
                 case COL_PROXY -> rule.externalProxyUrl = text(value);
                 case COL_TIMEOUT -> timeouts.set(row, text(value));
+                case COL_NOTE -> rule.note = text(value);
                 default -> {
                 }
             }

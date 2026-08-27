@@ -53,6 +53,7 @@ Security researchers and pentesters load it when Cloudflare, PerimeterX, Akamai,
 | Tools covered | Proxy only | Every tool — Proxy, Repeater, Intruder, Scanner, and other extensions |
 | Rule storage | — | A JSON file outside the Burp project: hand-editable, diffable, shareable |
 | Saving | Manual, per tab | Rules save themselves; import/export to move them between machines |
+| AI access | — | An optional local MCP endpoint an AI client can read settings through and propose changes to. It can never apply one |
 
 Two bugs from upstream are fixed along the way: the two `Save all settings` buttons each persisted
 only their own tab, so editing two tabs and saving from one silently discarded the other; and a
@@ -61,6 +62,131 @@ request that failed to process was dropped rather than forwarded.
 The settings UI was rewritten as hand-written Swing, styled through Burp's own
 `applyThemeToComponent`. The IntelliJ GUI designer form it replaced was never part of the Gradle
 build, so it could only be regenerated from inside the IDE.
+
+---
+
+## AI Control (optional, off by default)
+
+The **AI Control** tab exposes a local [MCP](https://modelcontextprotocol.io) endpoint so an AI
+client — Codex Desktop or Codex CLI — can read your Awesome TLS settings and propose changes to
+them. It exposes exactly two tools:
+
+| Tool | What it does |
+| --- | --- |
+| `awesome_tls.settings.inspect` | Returns the committed settings, the active domain rules, the fingerprint catalog, what each listener is really doing, and optionally the exact transport configuration a request to a given host would use. Read-only, and it never resolves DNS or sends anything to a target. |
+| `awesome_tls.settings.propose` | Validates a change and records it for review. It does not apply anything. |
+
+**Applying, rejecting and reverting are Burp UI actions.** There is no tool that applies a
+proposal. By default a proposal waits for you; there is also an **auto-apply** switch in the tab
+(off by default, confirmed when you arm it, then remembered) that commits a valid change the
+moment it arrives — useful when you are iterating on a fingerprint and a click per round is the
+slow part. Arming it means any local process can change your settings with no prompt, which is
+what the confirmation says. Everything else still runs either way: validation, the audit trail, and
+**Revert last AI apply**. A proposal shows you the complete
+field-by-field diff, what each change affects and when it takes effect, and a second confirmation
+prompt for the changes that can take an installation offline — a listener address, an upstream
+proxy, the global fingerprint, or deleting rules.
+
+### Read this before enabling it
+
+The endpoint binds to `127.0.0.1` only, and **has no authentication of any kind**. That is a
+deliberate, accepted trade-off, not an oversight, and it means:
+
+- any process running as you on this machine can read your **complete settings through it, including
+  external proxy credentials and the full hex ClientHello**;
+- any such process can submit a proposal for you to review;
+- binding to loopback is not authentication, which is why the warning is shown every time you enable
+  it, and why you have to tick a box to confirm you have read it.
+
+The tick is remembered across restarts — the risk is a property of the endpoint, not of today's
+session. Enabling is not: it is per Burp session, and the endpoint never comes back on its own after
+a restart.
+
+### Using it
+
+1. Open **Awesome TLS → AI Control**, pick a port (default `8885`), tick the acknowledgement (only
+   the first time) and press **Enable**.
+2. Register the endpoint with your client. The tab's **Connect a client** section copies the exact
+   command for you, with whatever port you chose:
+
+   ```sh
+   claude mcp add --transport http --scope user awesome-tls http://127.0.0.1:8885/mcp
+   ```
+
+   ```sh
+   codex mcp add awesome-tls --url http://127.0.0.1:8885/mcp
+   ```
+
+   For anything configured by hand, the same thing as JSON:
+
+   ```json
+   {
+     "mcpServers": {
+       "awesome-tls": {
+         "type": "http",
+         "url": "http://127.0.0.1:8885/mcp"
+       }
+     }
+   }
+   ```
+
+   OpenCode shares no key with that shape, and ignores it in silence. Its `opencode.json` wants:
+
+   ```json
+   {
+     "mcp": {
+       "awesome-tls": {
+         "type": "remote",
+         "url": "http://127.0.0.1:8885/mcp",
+         "enabled": true
+       }
+     }
+   }
+   ```
+
+   Both commands register the server **globally**, for every project. Drop `--scope user` to keep it
+   to the current project instead. A globally registered client can reach this endpoint from any
+   session, whenever it is enabled in Burp.
+
+   **Registering is not the same as connecting.** This endpoint speaks MCP `2026-07-28` and nothing
+   else. Codex Desktop and Codex CLI are what it is built against; any other client on that revision
+   is best-effort; and a client still on `2025-11-25` or earlier is answered with HTTP 400 and
+   `unsupported protocol version` — the endpoint refusing the handshake, not a mistake in the command
+   above. Those clients are not stuck: five headers on a plain POST reach the whole endpoint with the
+   same approval boundary, which is what section 7 of the skill below documents.
+3. Optionally install the companion **skill**. Registering the endpoint tells a client only that two
+   tools exist; the skill is what tells it which of a fingerprint and a hex ClientHello wins, the
+   acknowledgements a proposal has to carry, and how to capture a real ClientHello in the first
+   place. The tab copies these commands too:
+
+   ```sh
+   mkdir -p ~/.claude/skills/awesome-tls-mcp ~/.agents/skills/awesome-tls-mcp && curl -fsSL -o ~/.claude/skills/awesome-tls-mcp/SKILL.md https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md && cp ~/.claude/skills/awesome-tls-mcp/SKILL.md ~/.agents/skills/awesome-tls-mcp/SKILL.md
+   ```
+
+   ```sh
+   mkdir -p ~/.codex/skills/awesome-tls-mcp && curl -fsSL -o ~/.codex/skills/awesome-tls-mcp/SKILL.md https://raw.githubusercontent.com/Robin528919/burp-awesome-tls-plus/main/skills/awesome-tls-mcp/SKILL.md
+   ```
+
+   A skill is one `SKILL.md` in a standard directory, not a per-client format: `~/.claude/skills` and
+   `~/.agents/skills` are both scanned by Claude Code, OpenCode, Cursor, Copilot and Gemini CLI, and
+   Codex adds `~/.codex/skills`. That is why there are two lines rather than one per client. Both
+   overwrite rather than append, so re-running either one updates in place. Installing is optional and
+   changes nothing in Burp. The source is [`skills/awesome-tls-mcp/SKILL.md`](https://github.com/Robin528919/burp-awesome-tls-plus/blob/main/skills/awesome-tls-mcp/SKILL.md).
+4. When a proposal arrives, the tab is marked with a dot. It never steals focus or opens a dialog on
+   its own.
+5. Review the diff and press **Apply** or **Reject**. **Revert last AI apply** undoes the most recent
+   applied change, until anything else is committed.
+
+### Full audit
+
+Off by default. When switched on, every call, proposal, approval and settings change is recorded
+under `audit/` in the same directory as `rules.json`, with complete values. Two things follow from
+that: the trail is **plain text and unencrypted**, readable by anything with access to the folder;
+and while it is on, an operation that cannot be recorded does not happen — a settings change that
+could not be written to the audit trail is refused rather than applied unlogged.
+
+The design, and the reasoning behind each of these decisions, is in
+[ADR-0001](docs/decisions/0001-ai-settings-control-via-embedded-mcp.md).
 
 ---
 
@@ -236,6 +362,9 @@ are enough. See [workflows](.github/workflows) for the target language versions.
 
 You should now have one jar file (usually located at `./build/libs`) that works with Burp on your operating system.
 
+To run the checks, use `./gradlew checkAll`. It runs every self-check, verifies that inspect and
+propose resolve no hostnames, and loads the extension against a stand-in Burp API.
+
 ## FAQ
 
 ### What is a Burp Suite TLS fingerprint spoofing extension?
@@ -273,6 +402,13 @@ All of them. The extension registers an `HttpHandler`, which sees every outgoing
 ### How do I verify the fingerprint after enabling the extension?
 
 Compare against public checkers such as [tls.peet.ws](https://tls.peet.ws/), [tlsfingerprint.io](https://tlsfingerprint.io/), or [scrapfly HTTP/2 fingerprint tools](https://scrapfly.io/web-scraping-tools/http2-fingerprint), and bot-score demos like [Cloudflare connection tools](https://cloudflare.manfredi.io/en/tools/connection).
+
+### Can an AI change my Burp settings?
+
+Only if you approve each change yourself, in Burp. The optional AI Control endpoint lets an AI
+client read the settings and propose a change; applying, rejecting and reverting are Burp UI
+actions with no tool behind them. The endpoint is off by default, binds to loopback only, and is
+unauthenticated — see [AI Control](#ai-control-optional-off-by-default) for what that means.
 
 ### Where are domain rules stored?
 

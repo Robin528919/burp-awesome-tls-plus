@@ -42,3 +42,14 @@ func SmokeTest() {
 func GetFingerprints() *C.char {
 	return C.CString(strings.Join(server.GetFingerprints(), "\n"))
 }
+
+// GetRuntimeStatus reports what the Go side is actually doing, as JSON.
+//
+// Deliberately separate from TransportConfig: that struct is matched field-for-field with its Java
+// twin on every request, and adding status fields to it would change a two-language contract for
+// something that is read occasionally and is not part of a request at all. See ADR-0001 section 3.
+//
+//export GetRuntimeStatus
+func GetRuntimeStatus() *C.char {
+	return C.CString(server.RuntimeStatusJSON())
+}

@@ -6,7 +6,9 @@ package burp;
  */
 public class TransportConfig {
     /*
-     * Hostname.
+     * Destination as Go's url.URL.Host means it: "host:port", or a bare host when the request URL
+     * carried no explicit port. Not just the hostname — the Go side assigns this to req.URL.Host,
+     * where a bare host resolves to the scheme's default port.
      */
     public String Host;
 

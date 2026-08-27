@@ -12,7 +12,10 @@ import (
 )
 
 type TransportConfig struct {
-	// Hostname.
+	// Destination host, in url.URL.Host form: "host:port", or a bare host when the request
+	// carried no explicit port. Assigned straight to req.URL.Host, so a bare host here means
+	// the scheme's default port — which is why the Java side must send the port when there is
+	// one. See Extension.hostWithPort.
 	Host string
 
 	// Protocol scheme (HTTP or HTTPS).

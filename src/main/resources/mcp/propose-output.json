@@ -1,0 +1,496 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "revision": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "maxLength": 32
+    },
+    "chunkReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "scopeDigest",
+        "path",
+        "totalUtf8Bytes",
+        "sha256",
+        "cursor"
+      ],
+      "properties": {
+        "kind": {
+          "const": "chunk_reference"
+        },
+        "scopeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "totalUtf8Bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      }
+    },
+    "stringValue": {
+      "oneOf": [
+        {
+          "type": "string",
+          "maxLength": 262144
+        },
+        {
+          "$ref": "#/$defs/chunkReference"
+        }
+      ]
+    },
+    "scalarValue": {
+      "oneOf": [
+        {
+          "type": "string",
+          "maxLength": 262144
+        },
+        {
+          "$ref": "#/$defs/chunkReference"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "message": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "path": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "errorDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "expected": {
+          "$ref": "#/$defs/scalarValue"
+        },
+        "actual": {
+          "$ref": "#/$defs/scalarValue"
+        }
+      }
+    },
+    "businessError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schemaVersion",
+        "status",
+        "code",
+        "message",
+        "details",
+        "retryable"
+      ],
+      "properties": {
+        "kind": {
+          "const": "error"
+        },
+        "schemaVersion": {
+          "const": "awesome_tls.settings.v1"
+        },
+        "status": {
+          "const": "ERROR"
+        },
+        "code": {
+          "enum": [
+            "UNSUPPORTED_SCHEMA",
+            "VALIDATION_FAILED",
+            "REVISION_CONFLICT",
+            "DIRTY_UI",
+            "PROPOSAL_PENDING",
+            "EXPIRED",
+            "REQUEST_ID_CONFLICT",
+            "IDEMPOTENCY_CAPACITY",
+            "HIDDEN_RULE_CONFLICT",
+            "AMBIGUOUS_FINGERPRINT_HEX",
+            "CURSOR_INVALID",
+            "CURSOR_STALE",
+            "RULE_FILE_INVALID",
+            "EXTERNAL_DIVERGENCE",
+            "MERGE_CONFLICT",
+            "AUDIT_UNAVAILABLE",
+            "CONTROL_DISABLED",
+            "PERSISTENCE_FAILED",
+            "RECOVERY_REQUIRED"
+          ]
+        },
+        "message": {
+          "$ref": "#/$defs/message"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/errorDetail"
+          }
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "currentRevision": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "fieldChange": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "path",
+            "after"
+          ],
+          "properties": {
+            "operation": {
+              "const": "add"
+            },
+            "path": {
+              "$ref": "#/$defs/path"
+            },
+            "after": {
+              "$ref": "#/$defs/scalarValue"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "path",
+            "before",
+            "after"
+          ],
+          "properties": {
+            "operation": {
+              "const": "replace"
+            },
+            "path": {
+              "$ref": "#/$defs/path"
+            },
+            "before": {
+              "$ref": "#/$defs/scalarValue"
+            },
+            "after": {
+              "$ref": "#/$defs/scalarValue"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "path",
+            "before"
+          ],
+          "properties": {
+            "operation": {
+              "const": "remove"
+            },
+            "path": {
+              "$ref": "#/$defs/path"
+            },
+            "before": {
+              "$ref": "#/$defs/scalarValue"
+            }
+          }
+        }
+      ]
+    },
+    "riskFlag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "severity",
+        "paths",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z0-9_]{1,128}$"
+        },
+        "severity": {
+          "enum": [
+            "LOW",
+            "MEDIUM",
+            "HIGH"
+          ]
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/path"
+          }
+        },
+        "message": {
+          "$ref": "#/$defs/message"
+        }
+      }
+    },
+    "runtimeImpact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "effect",
+        "requiresUserAction",
+        "message"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "effect": {
+          "enum": [
+            "NEXT_REQUEST",
+            "NEXT_START",
+            "RELOAD_REQUIRED",
+            "RESTART_REQUIRED"
+          ]
+        },
+        "requiresUserAction": {
+          "type": "boolean"
+        },
+        "message": {
+          "$ref": "#/$defs/message"
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schemaVersion",
+        "status",
+        "proposalId",
+        "proposalDigest",
+        "baseRevision",
+        "candidateRevision",
+        "createdAt",
+        "expiresAt",
+        "reviewGeneration",
+        "summary",
+        "diff",
+        "riskFlags",
+        "runtimeImpact"
+      ],
+      "properties": {
+        "kind": {
+          "const": "proposal_result"
+        },
+        "schemaVersion": {
+          "const": "awesome_tls.settings.v1"
+        },
+        "status": {
+          "const": "PENDING"
+        },
+        "proposalId": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "proposalDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "baseRevision": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "candidateRevision": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "expiresAt": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "reviewGeneration": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "diff": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fieldChange"
+          }
+        },
+        "riskFlags": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/riskFlag"
+          }
+        },
+        "runtimeImpact": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/runtimeImpact"
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schemaVersion",
+        "status",
+        "proposalId",
+        "baseRevision",
+        "revision",
+        "appliedAt",
+        "summary",
+        "diff",
+        "riskFlags",
+        "runtimeImpact"
+      ],
+      "properties": {
+        "kind": {
+          "const": "proposal_result"
+        },
+        "schemaVersion": {
+          "const": "awesome_tls.settings.v1"
+        },
+        "status": {
+          "const": "APPLIED"
+        },
+        "proposalId": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "baseRevision": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "appliedAt": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "diff": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fieldChange"
+          }
+        },
+        "riskFlags": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/riskFlag"
+          }
+        },
+        "runtimeImpact": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/runtimeImpact"
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schemaVersion",
+        "status",
+        "revision",
+        "diff",
+        "riskFlags",
+        "runtimeImpact"
+      ],
+      "properties": {
+        "kind": {
+          "const": "proposal_result"
+        },
+        "schemaVersion": {
+          "const": "awesome_tls.settings.v1"
+        },
+        "status": {
+          "const": "NO_CHANGES"
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "diff": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "riskFlags": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "runtimeImpact": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    },
+    {
+      "$ref": "#/$defs/businessError"
+    }
+  ]
+}

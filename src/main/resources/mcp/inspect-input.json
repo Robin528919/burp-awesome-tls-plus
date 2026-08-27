@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "$defs": {
+    "bareHostname": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253
+    },
+    "cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion"],
+      "properties": {
+        "schemaVersion": {"const": "awesome_tls.settings.v1"},
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "settings",
+              "rules",
+              "fingerprints",
+              "runtime",
+              "proposal",
+              "effectiveConfig"
+            ]
+          }
+        },
+        "hosts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/bareHostname"}
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "cursor"],
+      "properties": {
+        "schemaVersion": {"const": "awesome_tls.settings.v1"},
+        "cursor": {"$ref": "#/$defs/cursor"}
+      }
+    }
+  ]
+}
