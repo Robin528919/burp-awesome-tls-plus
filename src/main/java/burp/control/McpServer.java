@@ -250,13 +250,13 @@ public final class McpServer {
 
     private void dispatch(Request request, Response response, Callback callback) {
         if (!PATH.equals(request.getHttpURI().getPath())) {
-            write(response, callback, 404, jsonRpcError(null, CODE_METHOD_NOT_FOUND, "not found", null));
+            refuse(response, callback, 404, jsonRpcError(null, CODE_METHOD_NOT_FOUND, "not found", null));
             return;
         }
         if (!"POST".equals(request.getMethod())) {
             // No standalone stream, no protocol session: section 16.1 refuses GET and DELETE.
             response.getHeaders().put("Allow", "POST");
-            write(response, callback, 405, jsonRpcError(null, CODE_INVALID_REQUEST,
+            refuse(response, callback, 405, jsonRpcError(null, CODE_INVALID_REQUEST,
                     "only POST is supported", null));
             return;
         }
@@ -265,7 +265,7 @@ public final class McpServer {
         var hosts = request.getHeaders().getValuesList("Host");
         if (hosts.size() != 1 || !hosts.get(0).equals(BIND_HOST + ":" + port)) {
             reject("HOST_REJECTED", hosts.size(), null);
-            write(response, callback, 403, gateError("HOST_REJECTED"));
+            refuse(response, callback, 403, gateError("HOST_REJECTED"));
             return;
         }
 
@@ -273,31 +273,31 @@ public final class McpServer {
         // only clients this endpoint supports never send one, and comparing invites an allowlist.
         if (!request.getHeaders().getValuesList("Origin").isEmpty()) {
             reject("ORIGIN_REJECTED", 0, null);
-            write(response, callback, 403, gateError("ORIGIN_REJECTED"));
+            refuse(response, callback, 403, gateError("ORIGIN_REJECTED"));
             return;
         }
 
         // ---- gate 3: framing.
         var contentType = single(request, "Content-Type");
         if (contentType == null || !isJsonContentType(contentType)) {
-            write(response, callback, 415, dataError(CODE_UNSUPPORTED_MEDIA_TYPE,
+            refuse(response, callback, 415, dataError(CODE_UNSUPPORTED_MEDIA_TYPE,
                     "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json"));
             return;
         }
         var encoding = single(request, "Content-Encoding");
         if (encoding != null && !encoding.trim().equalsIgnoreCase("identity")) {
-            write(response, callback, 415, dataError(CODE_UNSUPPORTED_MEDIA_TYPE,
+            refuse(response, callback, 415, dataError(CODE_UNSUPPORTED_MEDIA_TYPE,
                     "UNSUPPORTED_MEDIA_TYPE", "Content-Encoding must be identity"));
             return;
         }
         if (!acceptsBoth(request)) {
-            write(response, callback, 406, dataError(CODE_NOT_ACCEPTABLE, "NOT_ACCEPTABLE",
+            refuse(response, callback, 406, dataError(CODE_NOT_ACCEPTABLE, "NOT_ACCEPTABLE",
                     "Accept must include both application/json and text/event-stream"));
             return;
         }
         var declared = request.getHeaders().getLongField("Content-Length");
         if (declared > MAX_BODY_BYTES) {
-            write(response, callback, 413, bodyTooLarge(declared));
+            refuse(response, callback, 413, bodyTooLarge(declared));
             return;
         }
 
@@ -307,7 +307,7 @@ public final class McpServer {
             var retryAfterMs = retryAfterMillis();
             response.getHeaders().put("Retry-After",
                     String.valueOf((retryAfterMs + 999) / 1000));
-            write(response, callback, 429, rateLimited(retryAfterMs));
+            refuse(response, callback, 429, rateLimited(retryAfterMs));
             return;
         }
 
@@ -315,7 +315,7 @@ public final class McpServer {
         // memory while waiting.
         if (inFlight.incrementAndGet() > MAX_CONCURRENT) {
             inFlight.decrementAndGet();
-            write(response, callback, 429, concurrencyLimited());
+            refuse(response, callback, 429, concurrencyLimited());
             return;
         }
 
@@ -324,10 +324,10 @@ public final class McpServer {
             try {
                 body = readBody(request);
             } catch (BodyTooLargeException e) {
-                write(response, callback, 413, bodyTooLarge(e.observed));
+                refuse(response, callback, 413, bodyTooLarge(e.observed));
                 return;
             } catch (IOException e) {
-                write(response, callback, 400, jsonRpcError(null, CODE_PARSE_ERROR,
+                refuse(response, callback, 400, jsonRpcError(null, CODE_PARSE_ERROR,
                         "could not read the request body", null));
                 return;
             }
@@ -879,6 +879,22 @@ public final class McpServer {
         data.addProperty("limit", MAX_CONCURRENT);
         data.addProperty("retryable", true);
         return jsonRpcError(null, CODE_CONCURRENCY_LIMITED, "too many concurrent requests", data);
+    }
+
+    /**
+     * Refuses a request before its body has been read.
+     * <p>
+     * Answering while the body is still unread leaves the connection in a state Jetty cannot
+     * safely reuse, so it closes it. Without {@code Connection: close} the client is not told
+     * that: it keeps the connection in its pool, and the *next* request on it fails with an empty
+     * read instead of receiving the status this returned. For a client that reuses connections —
+     * which is every normal one — that is not a rare race but the ordinary consequence of any gate
+     * rejection followed by another request. HTTP/1.1 requires announcing the close; this is that
+     * announcement, and it applies to every refusal taken before {@code readBody}.
+     */
+    private static void refuse(Response response, Callback callback, int status, JsonObject body) {
+        response.getHeaders().put("Connection", "close");
+        write(response, callback, status, body);
     }
 
     private static void write(Response response, Callback callback, int status, JsonObject body) {

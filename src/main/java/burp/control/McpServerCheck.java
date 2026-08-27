@@ -159,6 +159,19 @@ public final class McpServerCheck {
         var encoded = send(post(discoverBody()).header("Content-Encoding", "gzip"));
         check(encoded.statusCode() == 415, "a compressed body is refused");
 
+        // Every refusal taken before the body is read must announce that the connection is going
+        // away. Jetty closes it either way; a client that is not told keeps it pooled and the next
+        // request on it dies with an empty read instead of the status above. That failure surfaces
+        // one request later than its cause, which makes it very hard to read.
+        for (var refusal : List.of(wrongType, repeated, encoded)) {
+            check(refusal.headers().allValues("Connection").stream()
+                            .anyMatch(v -> v.equalsIgnoreCase("close")),
+                    "a pre-body refusal says Connection: close");
+        }
+        check(charset.headers().allValues("Connection").stream()
+                        .noneMatch(v -> v.equalsIgnoreCase("close")),
+                "while an accepted request keeps its connection");
+
         for (var accept : List.of("application/json", "text/event-stream", "*/*")) {
             var response = send(base().header("Content-Type", "application/json")
                     .header("Accept", accept)
